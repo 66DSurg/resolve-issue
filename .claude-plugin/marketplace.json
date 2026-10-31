@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "resolve-issue",
+  "description": "The resolve-issue skill: one issue to a verified branch.",
+  "owner": { "name": "Biswajit Dutta Baruah", "url": "https://github.com/66DSurg" },
+  "plugins": [
+    {
+      "name": "resolve-issue",
+      "description": "Take one issue from report to a verified branch, then stop.",
+      "version": "1.0.0",
+      "author": { "name": "Biswajit Dutta Baruah", "url": "https://github.com/66DSurg" },
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}

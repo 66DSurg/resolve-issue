@@ -6,7 +6,7 @@ Built while making Case Logbook (caselogbook.com) by Dr Biswajit Dutta Baruah
 
 ## Why
 
-Agents are good at writing a fix. The trouble is that they are just as good at writing a confident fix for the wrong cause, reporting green from the tail of a log, sweeping stray files into a commit, or hijacking the developer's dev server. This skill is the process that survived about 70 agent-driven workflows on one production app. Around 600 raw lessons were merged into about 390 general ones, each with a one-line origin story, in [`references/lessons.md`](references/lessons.md). Every instruction in the skill cites the lesson behind it (`[DG-1]`), and a check fails if any core lesson is listed without being applied. Lessons that encode one product's taste (UX, product judgment, runtime cost, imports, tool quirks) sit in opt-in packs under [`references/packs/`](references/packs/), switched on per project with `packs:` in the profile or by a diagnosis that meets a pack's trigger.
+Agents are good at writing a fix. The trouble is that they are just as good at writing a confident fix for the wrong cause, reporting green from the tail of a log, sweeping stray files into a commit, or hijacking the developer's dev server. This skill is the process that survived about 70 agent-driven workflows on one production app. Around 600 raw lessons were merged into about 390 general ones, each with a one-line origin story, in [`references/lessons.md`](skills/resolve-issue/references/lessons.md). Every instruction in the skill cites the lesson behind it (`[DG-1]`), and a check fails if any core lesson is listed without being applied. Lessons that encode one product's taste (UX, product judgment, runtime cost, imports, tool quirks) sit in opt-in packs under [`references/packs/`](skills/resolve-issue/references/packs/), switched on per project with `packs:` in the profile or by a diagnosis that meets a pack's trigger.
 
 Some of the lessons that changed outcomes most:
 
@@ -19,15 +19,27 @@ Some of the lessons that changed outcomes most:
 
 ## Install
 
-Claude Code, personal skill:
+**Claude Code, as a plugin (recommended).** Inside Claude Code:
 
-```bash
-git clone https://github.com/66DSurg/resolve-issue ~/.claude/skills/resolve-issue
+```
+/plugin marketplace add 66DSurg/resolve-issue
+/plugin install resolve-issue@resolve-issue
 ```
 
-Or per project: clone it into `.claude/skills/resolve-issue` in the repo. The repository root is the skill (`SKILL.md` sits at the top).
+Update later with `/plugin marketplace update resolve-issue`.
 
-Other agents: the core is plain Markdown. Point your agent at `SKILL.md`. It falls back to Agent-tool subagents (`templates/subagent-fallback.md`) or to a plain sequential run (`references/process.md`).
+**Claude Code, by hand.** Clone the repo anywhere and link the skill folder into your skills directory:
+
+```bash
+git clone https://github.com/66DSurg/resolve-issue ~/src/resolve-issue
+ln -s ~/src/resolve-issue/skills/resolve-issue ~/.claude/skills/resolve-issue
+```
+
+For one project only, link it into that repo's `.claude/skills/resolve-issue` instead. Update with `git pull` in the clone.
+
+**Other agents.** The skill is plain Markdown in `skills/resolve-issue/`. Point your agent at `SKILL.md` there. It falls back to Agent-tool subagents (`templates/subagent-fallback.md`) or to a plain sequential run (`references/process.md`).
+
+There is nothing to install from npm. A skill is a folder with a `SKILL.md`.
 
 ## Quick start
 
@@ -35,7 +47,7 @@ Other agents: the core is plain Markdown. Point your agent at `SKILL.md`. It fal
 > resolve issue #123
 ```
 
-The first time it runs in a repo, the skill discovers your real commands, ports, docs locations, labels and commit trailers. It writes `.claude/resolve-issue.yml` and asks you only about the gaps that matter. See [`references/project-profile.md`](references/project-profile.md) and [`templates/profile.example.yml`](templates/profile.example.yml).
+The first time it runs in a repo, the skill discovers your real commands, ports, docs locations, labels and commit trailers. It writes `.claude/resolve-issue.yml` and asks you only about the gaps that matter. See [`references/project-profile.md`](skills/resolve-issue/references/project-profile.md) and [`templates/profile.example.yml`](skills/resolve-issue/templates/profile.example.yml).
 
 After that, each issue goes like this:
 
@@ -64,7 +76,7 @@ pre-flight → size → DIAGNOSE → SPEC → PLAN → BUILD ║ VERIFY ⟲ REPA
 
 A trivial change (no code path touched, judged from the diff) runs no agents. A small issue runs about 6. The summary is rendered from the run's data, not written by a model. `stopAfter: 'diagnose' | 'plan'` and `resumeFrom: 'build'` add an optional human checkpoint.
 
-In Claude Code with the Workflow tool, `scripts/stamp-workflow.sh <id>` makes a per-issue copy of [`templates/workflow.js`](templates/workflow.js). Without it, the same loop runs through Agent subagents.
+In Claude Code with the Workflow tool, `skills/resolve-issue/scripts/stamp-workflow.sh <id>` makes a per-issue copy of [`templates/workflow.js`](skills/resolve-issue/templates/workflow.js). Without it, the same loop runs through Agent subagents.
 
 ## The stop points
 
@@ -81,9 +93,10 @@ Agents never get production access, never write sensitive identifiers into issue
 
 ## Contributing a lesson
 
-Found a new failure mode? Add it to `references/lessons.md` under the right stage (or to a pack, if it only holds for one kind of product), in the same format (the rule, why it matters, a one-line anonymised origin). Give it the next free id and cite it from the stage reference that should apply it. A lesson that stops earning its place is marked `status: archived` or moved to a pack; ids are never reused. Then run:
+Found a new failure mode? Add it to `skills/resolve-issue/references/lessons.md` under the right stage (or to a pack, if it only holds for one kind of product), in the same format (the rule, why it matters, a one-line anonymised origin). Give it the next free id and cite it from the stage reference that should apply it. A lesson that stops earning its place is marked `status: archived` or moved to a pack; ids are never reused. Then run:
 
 ```bash
+cd skills/resolve-issue
 python3 scripts/check.py          # every core lesson applied, no dangling or duplicate ids, no private data
 node scripts/test-workflow.mjs    # dry-run of the workflow template with mocked agents
 ```

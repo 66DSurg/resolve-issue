@@ -4,4 +4,4 @@ __pycache__/
 node_modules/
 # eval runs and per-issue stamped workflows belong in the target repo, not here
 *-workspace/
-.claude/workflows/
+**/.claude/workflows/
