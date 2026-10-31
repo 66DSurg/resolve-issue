@@ -37,6 +37,13 @@ If no diagnosed mechanism produces the symptom on the reported data, say so here
 
 <"absent stamp = adopt, never wipe">. Catastrophic failure mode: <…>. Its tests are the gate.
 
+## Callers of a changed shared component
+
+Only when a shared component's default or behaviour changes. Walk each caller's flow, not just its import. Any "unsure" row is a question for the human before build [SP-17].
+
+| Caller | Flow before | Flow after | Intended? (yes / no / unsure) |
+|---|---|---|---|
+
 ## What changes for the user
 
 <one or two plain sentences; the run's summary quotes this line>

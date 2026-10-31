@@ -67,6 +67,8 @@ const REPAIR_ROUNDS = 3 // [VF-5]
 const RETURN_CAP = 20000 // characters of JSON returned to the main loop [OR-26]
 const SEVERITIES = ['defect', 'test-gap', 'doc-copy', 'follow-up', 'bookkeeping'] // triage order [VF-31]
 const CLOSE_P = 0.2 // symptom check: the top two within this are "close" [PL-1]
+const SHA = /^[0-9a-f]{7,40}$/ // a builder's commit ids must look like this [BD-22]
+const SAME_CAUSE_ROUNDS = 2 // repairs after which an unchanged behaviour-choice failure stops the task [VF-5]
 
 // ---------- helpers ----------
 
@@ -92,7 +94,7 @@ function cmds() {
 // The gates agent runs exactly this list, in order. No improvising [TG-6].
 function gateCmds() {
   const c = P.commands || {}
-  const out = Object.keys(c).filter((k) => c[k] && !['install', 'e2e', 'e2e_isolated', 'docs_checks'].includes(k)).map((k) => `${k}: ${joinCmd(c[k])}`)
+  const out = Object.keys(c).filter((k) => c[k] && !['install', 'post_install', 'e2e', 'e2e_isolated', 'docs_checks'].includes(k)).map((k) => `${k}: ${joinCmd(c[k])}`)
   for (const d of c.docs_checks || []) out.push(`docs: ${d}`)
   if (A.e2e && (c.e2e_isolated || c.e2e)) out.push(`e2e: ${c.e2e_isolated || c.e2e}`)
   return out
@@ -137,7 +139,8 @@ ${cmds()}
 CI-only checks (they need a PR or CI context; never run them as gates, report them as ci_only) [TG-34]:
 ${list(P.ci_only)}
 Env: source ${(P.env && P.env.source) || '(none)'} before tests. Secrets are LINKED from the main checkout; never create dummy secrets or copy secret values.
-Ports: use ONLY backend ${A.ports && A.ports.backend} and frontend ${A.ports && A.ports.frontend} with strict-port flags. NEVER use ${((P.ports && P.ports.reserved) || []).join(', ') || 'the developer default ports'}. Check ownership with lsof before starting a server; kill every server you started before you finish.
+Logs: write server and test logs under ${A.worktree}/.logs/<port>/, never a fixed shared path${((P.env && P.env.fixed_paths) || []).length ? ` (the test runner writes these fixed paths; override them: ${P.env.fixed_paths.join(', ')})` : ''} [IS-18].
+${P.env && P.env.shared_db ? 'The dev database is SHARED with other worktrees: functions or migrations another run applied may be there, and yours land on theirs. Use this run\'s own schema or database name when the profile gives one; a failure from another branch\'s DB objects is reported, never fixed [IS-17, TG-11].\n' : ''}Ports: use ONLY backend ${A.ports && A.ports.backend} and frontend ${A.ports && A.ports.frontend} with strict-port flags. NEVER use ${((P.ports && P.ports.reserved) || []).join(', ') || 'the developer default ports'}. Check ownership with lsof before starting a server; kill every server you started before you finish.
 Search with \`command grep -rn\` or \`rg\` (shell wrappers can skip files).
 
 Decision rule: do not stop or ask the human. Rank the real alternatives${P.ranker && P.ranker.cmd ? ` with \`${P.ranker.cmd}\` (JSON on stdin, >=2 options)` : ' explicitly with probabilities'}, let evidence decide, and record what you decided and why.
@@ -197,6 +200,15 @@ const SPEC_PROPS = {
   docs_justification: { type: 'string' },
   assumptions: { type: 'array', items: { type: 'string' } },
   laws: { type: 'array', items: { type: 'string' } },
+  caller_flows: {
+    type: 'array',
+    description: 'only when a shared component\'s default or behaviour changes: one row per caller [SP-17]',
+    items: {
+      type: 'object',
+      properties: { caller: { type: 'string' }, before: { type: 'string' }, after: { type: 'string' }, intended: { type: 'string', enum: ['yes', 'no', 'unsure'] } },
+      required: ['caller', 'before', 'after', 'intended'],
+    },
+  },
 }
 const SPEC_REQ = ['root_cause', 'shared_seam', 'mechanism_explains_reported_data', 'user_change', 'out_of_scope', 'docs_impact']
 const SPEC = { type: 'object', properties: SPEC_PROPS, required: ['spec_path'].concat(SPEC_REQ) }
@@ -216,7 +228,11 @@ const TASK = {
 
 const PLAN = {
   type: 'object',
-  properties: { plan_path: { type: 'string' }, tasks: { type: 'array', items: TASK } },
+  properties: {
+    plan_path: { type: 'string' },
+    tasks: { type: 'array', items: TASK },
+    serial_reason: { type: ['string', 'null'], description: 'only when every task must run after the one before: the real dependency, in one sentence [PL-15]' },
+  },
   required: ['plan_path', 'tasks'],
 }
 
@@ -246,7 +262,7 @@ const FIT = {
 const BUILD = {
   type: 'object',
   properties: {
-    commits: { type: 'array', items: { type: 'string' }, description: 'full SHAs you created' },
+    commits: { type: 'array', items: { type: 'string' }, description: 'full SHAs you created, from git log; anything else rejects the task [BD-22]' },
     files_changed: { type: 'array', items: { type: 'string' } },
     commands_run: { type: 'array', items: { type: 'object', properties: { command: { type: 'string' }, output_tail: { type: 'string' } }, required: ['command', 'output_tail'] } },
     deviations: { type: 'array', items: { type: 'string' } },
@@ -268,13 +284,25 @@ const VERDICT = {
       items: {
         type: 'object',
         properties: {
-          severity: { type: 'string', enum: SEVERITIES, description: 'defect = wrong behaviour a user could hit; test-gap = untested path; doc-copy = wrong or misleading text; follow-up = real but out of scope; bookkeeping = trailers, ticks, formatting' },
+          severity: { type: 'string', enum: SEVERITIES, description: 'defect = wrong behaviour a user could hit, wrong persisted state, or a security or eligibility hole in this branch\'s code; test-gap = untested path; doc-copy = wrong or misleading text; follow-up = real but out of scope; bookkeeping = trailers, ticks, formatting' },
           finding: { type: 'string', description: 'one sentence, naming file:line or the screen' },
           file: { type: ['string', 'null'], description: 'the repo path the finding is about, if any' },
         },
         required: ['severity', 'finding'],
       },
     },
+    negative_controls: {
+      type: 'array',
+      description: 'one per acceptance row of the task [VF-3]',
+      items: {
+        type: 'object',
+        properties: { row: { type: 'string' }, result: { type: 'string', enum: ['red', 'green', 'infra_error'] }, detail: { type: 'string' } },
+        required: ['row', 'result'],
+      },
+    },
+    failing_test: { type: ['string', 'null'], description: 'when failing: the test that fails' },
+    failure_cause: { type: ['string', 'null'], description: 'when failing: its root cause, one sentence' },
+    behaviour_choice: { type: 'boolean', description: 'true when the failure hinges on an undecided product behaviour, not a code fault [VF-5]' },
     summary: { type: 'string' },
   },
   required: ['passed', 'checks', 'unfinished_work', 'code_defect', 'summary'],
@@ -342,14 +370,16 @@ Include: exact user-facing copy; what changes for the user, in plain words (user
 EXPLICITLY OUT OF SCOPE (adjacent cleanup becomes follow-up issues, listed by title); what agents cannot validate (manual checks); honest risks; assumptions made instead of asking.${A.agentBriefPath ? `\nThe agent brief at ${A.agentBriefPath} is input: its acceptance criteria and out-of-scope list carry into the spec (the "Agent brief:" line).` : ''}
 If no diagnosed mechanism produces the symptom on the reported data, say so (mechanism_explains_reported_data=false) and specify the measurement needed or a fix correct regardless plus in-product evidence capture.
 If the change contradicts an ADR, write "Contradicts ADR-NNNN … but worth reopening because …". For data-sensitive changes, write the load-bearing invariant and its catastrophic failure mode.
-Prefer the fix that works with already-deployed state. Delete low-value broken paths rather than repairing them. Use glossary terms.`
+Prefer the fix that works with already-deployed state. Delete low-value broken paths rather than repairing them. Use glossary terms.
+If the change alters a shared component's default or behaviour, walk EVERY caller's flow (not just its import) and fill caller_flows: caller, flow before, flow after, intended yes|no|unsure. A row the report, spec and ADRs do not settle is "unsure"; never assume it [SP-17].`
 
 const PLAN_RULES = `Plan rules: the plan is where each build task's code is written. Put ACTUAL code and exact signatures in it. Banned: "TBD", "add appropriate handling", "similar to Task N".
 Use ${SMALL ? 'exactly 1 task' : '3 to 9 tasks (slice hard at about 10)'}, root fix first. Each task is a vertical slice that delivers observable behaviour through a real interface; never split by layer.
 The root-fix task is test-first, as checkbox steps: write the failing test through the interface it names → run it and SEE it fail → implement → see it pass → typecheck/lint → commit explicit paths. Other tasks add tests where they change behaviour.
 List every file each task touches and mark depends_on accurately. File overlap is used only to schedule waves (tasks sharing a file never run at once). Docs belong to the docs stage, never to a task.
 Copy the relevant laws into each task. Tell tasks which shared components and helpers to reuse instead of re-implementing them. Tests prefer real collaborators to mocks.
-Return the tasks as structured units; "instructions" is that task's full section, verbatim, code included.`
+Return the tasks as structured units; "instructions" is that task's full section, verbatim, code included.
+Aim for parallel waves: a depends_on edge means a task needs another's code, not just its order. If every task truly must follow the one before, say why in serial_reason [PL-15].`
 
 const specPrompt = (diags) => `You are writing the SPEC for issue ${ISSUE.id}. Write it to ${A.specPath} using the house template (templates/spec.md of the resolve-issue skill, or the exemplar in ${(P.docs && P.docs.index) || 'the docs index'}).
 Diagnoses (verbatim, ${diags.length} independent angle(s)). Where they disagree, read the code yourself and decide:
@@ -374,6 +404,14 @@ ${SPEC_IN_COMMIT
 Write the plan to ${A.planPath} (templates/plan.md format) and commit it. Return the spec fields and the plan units together.
 ${SPEC_RULES}
 ${PLAN_RULES}
+${preamble()}`
+
+const replanPrompt = (spec, plan, shape) => `You are RE-PLANNING issue ${ISSUE.id} [PL-15]. The plan at ${plan.plan_path} has ${shape.tasks} tasks that the scheduler would run in ${shape.waves} waves: fully serial.
+Rewrite it for parallelism: keep a depends_on edge only where a task needs another's code, and split shared files so independent tasks touch disjoint files. Update ${A.planPath} and commit it.
+If serial really is right, keep the tasks and give the real dependency in serial_reason.
+Current tasks: ${JSON.stringify(plan.tasks.map((t) => ({ id: t.id, title: t.title, files: t.files, depends_on: t.depends_on })))}
+${PLAN_RULES}
+Spec summary: ${JSON.stringify(spec)}
 ${preamble()}`
 
 const loadPlanPrompt = () => `You are RESUMING issue ${ISSUE.id} at the build stage, after a human reviewed the committed plan. Read the plan at ${A.planPath} and the spec (${SPEC_REF}) as committed on ${A.branch}.
@@ -410,16 +448,19 @@ Checklist (record every item in checks):
 2. The named tests exist AND pass when YOU run them. 3. Typecheck and lint are clean.
 4. Each commit has the required trailers and issue tag. 5. No TODO/FIXME/"not implemented" in the diff. 6. The task's plan checkboxes are ticked IN A COMMIT. Ignore uncommitted plan ticks in the working tree; they are another task's, not a finding [BD-21].
 7. Law checks by grep (every numbered law; destructive DDL; new unique constraints; secrets; sensitive identifiers in fixtures, commits or docs).
-8. NEGATIVE CONTROL: prove the regression test can fail. Make a throwaway detached worktree at the last sha (outside ${A.worktree}), run a REAL dependency install there (${(P.commands && P.commands.install) || 'the frozen-lockfile install'}; never symlink dependency dirs, module mocks break) and link only the env and secrets [IS-16],
-   restore ONLY the non-test files to their pre-task versions there, run the test, and expect RED. Then remove the throwaway worktree. Never stash or revert inside ${A.worktree}; other tasks are live there.
+8. NEGATIVE CONTROL, one per ACCEPTANCE ROW (each criterion in ACCEPTANCE), recorded in negative_controls [VF-3]. Make a throwaway detached worktree at the last sha (outside ${A.worktree}), run a REAL dependency install there (${(P.commands && P.commands.install) || 'the frozen-lockfile install'}; never symlink dependency dirs, module mocks break)${P.commands && P.commands.post_install ? `, then ${joinCmd(P.commands.post_install)}` : ''}, and link only the env and secrets [IS-16].
+   For each row, remove only the guard or code that row is about, run that row's tests, expect RED, and restore. A row whose tests stay GREEN is "green": its tests do not prove it. Then remove the throwaway worktree. Never stash or revert inside ${A.worktree}; other tasks are live there.
    The assertions must fail on the bad outcome (not merely "not throw"), and the component under test must not be mocked.
+   A test that cannot load or start (module not found, missing codegen, install error) is an INFRASTRUCTURE error, never RED: fix the setup and rerun; if you cannot, record that row as infra_error.
 9. The reported symptom (${A.reportPath}) is resolved for the reporter's data shape; reason explicitly about those rows.
 10. Claims in docs and comments are true. 11. The feature is reachable from the UI. 12. Any gate is correct in both directions (no leak, full coverage).
 13. None of the build pitfalls in ${SKILL}/references/verification.md section 2 (stripped fields, orphaned triggers, cache-masked indicators, unhandled promise chains, route order, effect loops, silent not_configured, hardcoded formats, and the rest).
 14. Each test drives the interface it names. A test that imports internals (private helpers, module internals no caller uses) is a test-gap finding.
 Kill any server you start. code_defect=true ONLY for real logic defects, not bookkeeping. unfinished_work must name files and symbols precisely.
 Put everything else you noticed in non_blocking_findings, each with a severity (defect | test-gap | doc-copy | follow-up | bookkeeping) and the file it is about. Tag honestly: a reachable wrong behaviour (a page stuck loading, a raw 500, misleading copy) is a defect or doc-copy even if it is outside this task [VF-31, VF-11].
+Wrong persisted state (a stale field left behind, a record that should have been cleared) or a security or eligibility hole (someone allowed who should not be) in THIS branch's code is a defect, never a follow-up [VF-31].
 A defect in this task's own files sends the task back for repair even if everything else passes.
+When failing, name failing_test and failure_cause. Set behaviour_choice=true only when the failure hinges on an undecided product behaviour (what SHOULD happen), not a code fault [VF-5].
 ${preamble()}`
 
 const repairPrompt = (t, v) => `You are REPAIRING task ${t.id} of issue ${ISSUE.id}: ${t.title}. A previous attempt was rejected by an independent verifier. Fix EXACTLY this:
@@ -444,6 +485,7 @@ Known-flaky SET: ${JSON.stringify(P.known_flaky || [])}. A failure inside this s
 You may fix ONLY a failure you can tie to a file this branch changed (\`git diff --name-only ${BASE}...HEAD\`). Everything else goes in remaining_failures, unchanged.
 Every fix is its own commit, listed in commits; a fresh verifier will review each one. Do NOT run the CI-only checks from the shared context; list them in ci_only [TG-34].
 To triage a red spec, run it alone and in the full run; require green twice in a row.
+A gate that cannot load or start (module not found, missing codegen, install error) is an environment problem, never a red result: run install${P.commands && P.commands.post_install ? ` and ${joinCmd(P.commands.post_install)}` : ''}, then rerun [IS-16].
 Change a TEST only when it asserts behaviour the app deliberately no longer has, and cite the commit. Never skip, retry-wrap, raise timeouts, loosen or weaken anything. If that seems necessary, stop and report.
 Kill every server you start and prove zero listeners on the run's ports at the end.
 ${preamble()}`
@@ -506,39 +548,114 @@ function touchesTask(f, t) {
   return (t.files || []).some((p) => p && new RegExp(`(^|[^\\w.-])(${esc(p)}|${esc(p.split('/').pop())})(?=$|[^\\w-])`).test(text))
 }
 
+const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
 async function runTask(t, prefix) {
   const b = await call(buildPrompt(t, prefix), opts('build', { label: `build ${t.id}`, phase: 'Build', schema: BUILD }))
   if (!b) return { id: t.id, title: t.title, status: 'failed', reason: 'agent died (build)', attempts: [] } // [OR-9]
-  const shas = (b.commits || []).slice()
+  const shas = []
+  let bad = [] // commit ids in the latest builder/repair report that are not SHAs [BD-22]
+  const take = (r) => {
+    const cs = (r.commits || []).map(String)
+    bad = cs.filter((s) => !SHA.test(s))
+    shas.push(...cs.filter((s) => SHA.test(s)))
+  }
+  take(b)
   const deviations = (b.deviations || []).slice()
   const attempts = []
   let v = null
   for (let round = 0; round <= REPAIR_ROUNDS; round++) {
-    v = await call(verifyPrompt(t, shas, deviations), opts('verify', { label: `verify ${t.id} #${round + 1}`, phase: 'Verify', schema: VERDICT }))
-    if (!v) v = await call(verifyPrompt(t, shas, deviations), opts('verify', { label: `re-verify ${t.id} #${round + 1}`, phase: 'Verify', schema: VERDICT })) // a null verdict is never a pass
-    if (!v) {
-      attempts.push({ round, verdict: null })
-      return { id: t.id, title: t.title, status: 'failed', reason: 'verifier died twice', commits: shas, attempts, build: b }
+    if (bad.length) {
+      // a report without real SHAs is a builder failure: straight to repair, no verifier [BD-22]
+      v = {
+        passed: false, code_defect: false, summary: 'builder report rejected: commit ids are not SHAs',
+        checks: [{ check: 'builder reported real commit SHAs', ok: false, detail: bad.join(' | ') }],
+        unfinished_work: `Your report listed commit ids that are not SHAs: ${bad.map((s) => JSON.stringify(s)).join(', ')}. Commit the task if it is not committed, then report the full SHA of every commit from \`git log\`.`,
+      }
+      attempts.push({ round, passed: false, code_defect: false, bad_commits: bad, summary: v.summary, non_blocking: [] })
+    } else {
+      v = await call(verifyPrompt(t, shas, deviations), opts('verify', { label: `verify ${t.id} #${round + 1}`, phase: 'Verify', schema: VERDICT }))
+      if (!v) v = await call(verifyPrompt(t, shas, deviations), opts('verify', { label: `re-verify ${t.id} #${round + 1}`, phase: 'Verify', schema: VERDICT })) // a null verdict is never a pass
+      if (!v) {
+        attempts.push({ round, verdict: null })
+        return { id: t.id, title: t.title, status: 'failed', reason: 'verifier died twice', commits: shas, attempts, build: b }
+      }
+      const nb = (v.non_blocking_findings || []).slice()
+      let own = []
+      const why = []
+      if (v.passed) {
+        // a pass that carries a defect in the task's own files is a rejection [VF-11]
+        own = nb.filter((f) => f && typeof f === 'object' && f.severity === 'defect' && touchesTask(f, t))
+        why.push(...own.map((f) => `- ${f.finding}`))
+        // a pass needs a red negative control for every acceptance row [VF-3]
+        const nc = v.negative_controls || []
+        if (!nc.length) why.push('- No negative control recorded. Run one for EACH acceptance row.')
+        for (const c of nc) {
+          if (c && c.result === 'green') why.push(`- Acceptance row "${c.row}" stays GREEN with its guard removed: add a test that fails without it.`)
+          if (c && c.result === 'infra_error') nb.push({ severity: 'test-gap', finding: `negative control for "${c.row}" not run: infrastructure error (${c.detail || 'no detail'})` }) // never read as RED [IS-16]
+        }
+      }
+      if (why.length) {
+        v = Object.assign({}, v, {
+          passed: false,
+          code_defect: v.code_defect || own.length > 0,
+          unfinished_work: [v.unfinished_work, 'The verifier passed this task, but:', ...why].filter(Boolean).join('\n'),
+          checks: (v.checks || []).concat([{ check: 'no defect in the task\'s files; every acceptance row has a red negative control', ok: false, detail: why.join(' | ') }]),
+        })
+      }
+      const sig = v.passed || !v.failing_test ? null : `${norm(v.failing_test)}|${norm(v.failure_cause)}`
+      attempts.push({ round, passed: v.passed, code_defect: v.code_defect, summary: v.summary, promoted_defects: own.length, sig, behaviour_choice: !!v.behaviour_choice, non_blocking: nb.filter((f) => !own.includes(f)) })
+      if (v.passed) return { id: t.id, title: t.title, status: 'verified', commits: shas, attempts, build: b, repairs: round }
+      // same test, same cause after 2 repairs, and the cause is a behaviour choice: a human decides, no third repair [VF-5]
+      const prev = attempts[attempts.length - 2]
+      if (round >= SAME_CAUSE_ROUNDS && sig && v.behaviour_choice && prev && prev.sig === sig) {
+        return {
+          id: t.id, title: t.title, status: 'decision_required', reason: `same failure after ${round} repairs, and it is a behaviour choice`,
+          decision_required: `${t.id}: ${v.failing_test} fails because ${v.failure_cause}. Decide the intended behaviour, then relaunch this task.`,
+          unfinished_work: v.unfinished_work, commits: shas, attempts, build: b, repairs: round,
+        }
+      }
     }
-    const nb = v.non_blocking_findings || []
-    // a pass that carries a defect in the task's own files is a rejection [VF-11]
-    const own = v.passed ? nb.filter((f) => f && typeof f === 'object' && f.severity === 'defect' && touchesTask(f, t)) : []
-    if (own.length) {
-      v = Object.assign({}, v, {
-        passed: false,
-        code_defect: true,
-        unfinished_work: [v.unfinished_work, 'The verifier passed this task but found defects in its own files. Fix them:', ...own.map((f) => `- ${f.finding}`)].filter(Boolean).join('\n'),
-        checks: (v.checks || []).concat([{ check: 'no defect findings in the task\'s files', ok: false, detail: own.map((f) => f.finding).join(' | ') }]),
-      })
-    }
-    attempts.push({ round, passed: v.passed, code_defect: v.code_defect, summary: v.summary, promoted_defects: own.length, non_blocking: nb.filter((f) => !own.includes(f)) })
-    if (v.passed) return { id: t.id, title: t.title, status: 'verified', commits: shas, attempts, build: b, repairs: round }
     if (round === REPAIR_ROUNDS) break
     const r = await call(repairPrompt(t, v), opts('repair', { label: `repair ${t.id} #${round + 1}`, phase: 'Verify', schema: BUILD }))
-    if (r && r.commits) shas.push(...r.commits)
+    if (r) take(r)
     if (r && r.deviations) deviations.push(...r.deviations)
   }
   return { id: t.id, title: t.title, status: 'failed', reason: 'rejected after repairs', unfinished_work: v.unfinished_work, commits: shas, attempts, build: b, repairs: REPAIR_ROUNDS }
+}
+
+// ---------- wave scheduling [OR-8, PL-4, OR-11, PL-15] ----------
+
+// ready = all deps done; a dependency id that is not in the plan counts as satisfied; nothing ready (a cycle) → the first alone
+function readyOf(remaining, done, ids) {
+  const ready = remaining.filter((t) => (t.depends_on || []).every((d) => done.has(d) || !ids.has(d)))
+  return ready.length ? ready : [remaining[0]]
+}
+// file overlap only schedules: tasks sharing a file never run in the same wave, capped by maxParallel [SZ-2]
+function pickWave(ready, cap) {
+  const wave = []
+  const used = new Set()
+  for (const t of ready) {
+    if (wave.length >= cap) break
+    if ((t.files || []).some((f) => used.has(f))) continue
+    ;(t.files || []).forEach((f) => used.add(f))
+    wave.push(t)
+  }
+  return wave
+}
+// waves the scheduler would run with unlimited builders; serial = medium, more than 2 tasks, one wave each
+function planShape(tasks) {
+  const ids = new Set(tasks.map((t) => t.id))
+  const done = new Set()
+  let rem = tasks.slice()
+  let waves = 0
+  while (rem.length) {
+    const w = pickWave(readyOf(rem, done, ids), Infinity)
+    w.forEach((t) => done.add(t.id))
+    rem = rem.filter((t) => !w.includes(t))
+    waves++
+  }
+  return { tasks: tasks.length, waves, serial: SIZE === 'medium' && tasks.length > 2 && waves === tasks.length }
 }
 
 // ---------- symptom check verdict, computed here rather than by the model [PL-1] ----------
@@ -582,8 +699,9 @@ function metrics(r) {
     verified: ts.filter((t) => t.status === 'verified').length,
     tasks_with_code_defect: ts.filter((t) => (t.attempts || []).some((a) => a.code_defect)).length, // [CO-2]
     repairs: ts.reduce((n, t) => n + (t.repairs || 0), 0),
-    verifier_rejections: attempts.filter((a) => a.passed === false).length + (r.gates_verdict && r.gates_verdict.passed === false ? 1 : 0),
+    verifier_rejections: attempts.filter((a) => a.passed === false && !a.bad_commits).length + (r.gates_verdict && r.gates_verdict.passed === false ? 1 : 0),
     promoted_defects: attempts.reduce((n, a) => n + (a.promoted_defects || 0), 0),
+    bad_commit_reports: attempts.filter((a) => a.bad_commits).length, // [BD-22]
     gates_commits: (r.gates && r.gates.commits && r.gates.commits.length) || 0,
     agents: STAGES.reduce((n, s) => n + s.agents, 0),
     stages: STAGES,
@@ -603,6 +721,7 @@ function compact(r) {
     ranking: cands.slice(0, 3).map((x) => ({ cause: x.cause, p: typeof x.rank_p === 'number' ? x.rank_p : null, verdict: x.verdict })),
     shared_seam: (r.spec && r.spec.shared_seam) || null,
     user_change: (r.spec && r.spec.user_change) || null,
+    plan_waves: r.plan_waves || null, // tasks, waves, replanned, serial_reason [PL-15]
     symptom_check: r.symptom_check ? { verdict: r.symptom_check.verdict, reason: r.symptom_check.reason } : null,
     paths: {
       spec: r.spec ? r.spec.spec_path || SPEC_REF : A.specPath || null,
@@ -722,11 +841,30 @@ if (A.resumeFrom === 'build') {
     if (!result.spec) return finish(Object.assign(result, { status: 'failed', stage: 'spec', reason: 'agent died' }))
   }
   if (result.spec.decision_required) return finish(Object.assign(result, { status: 'decision_required', decision_required: result.spec.decision_required }))
+  // a shared component's changed default: any caller whose new flow is not known to be intended is the human's call [SP-17]
+  const unsure = (result.spec.caller_flows || []).filter((x) => x && x.intended === 'unsure')
+  if (unsure.length) {
+    return finish(Object.assign(result, {
+      status: 'decision_required', stage: 'spec',
+      decision_required: 'A shared component changes, and these callers\' new flow is not known to be intended:\n' + unsure.map((x) => `- ${x.caller}: before "${x.before}"; after "${x.after}". Intended?`).join('\n'),
+    }))
+  }
   if (!result.spec.mechanism_explains_reported_data) log('Spec: no diagnosed mechanism fully explains the reported data. Proceeding with a fix that is correct regardless, plus evidence capture [SP-3].')
 
   stage('Plan')
   if (!SMALL) result.plan = await call(planPrompt(result.spec), opts('plan', { label: 'plan', schema: PLAN }))
   if (!result.plan || !(result.plan.tasks || []).length) return finish(Object.assign(result, { status: 'failed', stage: 'plan', reason: result.plan ? 'plan returned no tasks' : 'agent died' }))
+  // the plan reports its wave count; a fully serial medium plan gets one re-plan [PL-15]
+  if (!SMALL) {
+    let shape = planShape(result.plan.tasks)
+    if (shape.serial && !result.plan.serial_reason) {
+      const re = await call(replanPrompt(result.spec, result.plan, shape), opts('plan', { label: 'replan', schema: PLAN }))
+      if (re && (re.tasks || []).length) result.plan = re
+      shape = Object.assign(planShape(result.plan.tasks), { replanned: true })
+    }
+    result.plan_waves = Object.assign(shape, { serial_reason: result.plan.serial_reason || null })
+    log(`Plan: ${shape.tasks} tasks in ${shape.waves} waves${shape.replanned ? ' after one re-plan' : ''}${result.plan.serial_reason ? `; serial because ${result.plan.serial_reason}` : ''}.`)
+  }
   if (result.plan.tasks.length > 10) log(`Plan has ${result.plan.tasks.length} tasks (cap is about 9). Consider slicing into sub-issues [PL-7].`)
   // the symptom check runs only when no diagnosis measured a reproduction [PL-1, DG-8]
   const measured = result.diagnoses.every((d) => d.confidence === 'high' && (d.evidence || []).length > 0)
@@ -755,18 +893,7 @@ while (remaining.length) {
   for (const t of blocked) { byId[t.id] = { id: t.id, title: t.title, status: 'blocked', reason: 'a dependency failed' }; failed.add(t.id) }
   remaining = remaining.filter((t) => !blocked.includes(t))
   if (!remaining.length) break
-  // ready = all deps done; a dependency id that is not in the plan counts as satisfied; if nothing is ready (cycle), run the first alone [OR-8]
-  let ready = remaining.filter((t) => (t.depends_on || []).every((d) => byId[d] || !ids.has(d)))
-  if (!ready.length) ready = [remaining[0]]
-  // file overlap only schedules: tasks sharing a file never run in the same wave [PL-4, OR-11], capped by maxParallel [SZ-2]
-  const wave = []
-  const used = new Set()
-  for (const t of ready) {
-    if (wave.length >= MAX_PAR) break
-    if ((t.files || []).some((f) => used.has(f))) continue
-    ;(t.files || []).forEach((f) => used.add(f))
-    wave.push(t)
-  }
+  const wave = pickWave(readyOf(remaining, new Set(Object.keys(byId)), ids), MAX_PAR) // [OR-8, PL-4, OR-11, SZ-2]
   log(`Wave: ${wave.map((t) => t.id).join(', ')} (${remaining.length - wave.length} queued)`)
   const outs = await parallel(wave.map((t) => () => runTask(t)))
   wave.forEach((t, i) => {
@@ -815,4 +942,6 @@ if (/^none\b/i.test(String(result.spec.docs_impact || '').trim())) {
 
 const allVerified = result.tasks.every((t) => t && t.status === 'verified')
 result.status = allVerified && result.gates && result.gates.all_green && result.gates_commits_verified !== false ? 'verified' : 'partial'
+const decisions = result.tasks.filter((t) => t && t.status === 'decision_required') // [VF-5]
+if (decisions.length) Object.assign(result, { status: 'decision_required', decision_required: decisions.map((t) => t.decision_required).join('\n') })
 return finish(result) // compact and capped, summary rendered from the data [OR-26]

@@ -59,7 +59,8 @@ Do this inline, before launching anything. It is cheap, and it prevents the most
    - **3b. Check it is not already built or already rejected.** Search the code and docs for the issue's glossary concept, not only its words, and read `.out-of-scope/` if the repo has one. A hit stops the run: tell the human what exists or was rejected, and recommend closing, re-scoping or reopening the decision [PF-5].
 4. **Check feasibility** of any new dependency, data source or token before you spec on top of it, on every platform the product targets [PF-7, PF-8, PF-9, PF-10, PF-12].
 5. **Ask only the questions that change what gets built.** Ask them one at a time, each with your recommended answer. For everything else, start, and write your assumptions into the spec [PF-3]. The question that matters most is usually the one that separates the reported symptom from a neighbouring one: which screen, which flow, which data [DG-15]. A fact only the reporter has moves the issue to `needs-info` with the question for them. It never becomes an assumption.
-6. **A destructive or data-loss-sensitive request** never goes straight to a build. It gets a decision menu first [SP-11].
+6. **A destructive or data-loss-sensitive request** never goes straight to a build. It gets a decision menu first [SP-11]. So does a shared component's changed default whose effect on some caller's flow nobody knows [SP-17].
+7. **Check shared state against runs already going.** With `env.shared_db: true`, warn before a second run that touches DB functions, and run them one after the other. Each run overrides the runner's `env.fixed_paths` with its own log directory [IS-17, IS-18].
 
 ## Step 2: size it, budget it, announce it
 

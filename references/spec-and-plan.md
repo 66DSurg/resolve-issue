@@ -37,6 +37,7 @@ Templates: `templates/spec.md` and `templates/plan.md`.
 11. **Delete rather than repair low-value broken paths** [PL-9]. Deleting code is the cheapest fix.
 12. **Honest risks**, including what the change newly arms downstream [DG-26].
 13. **Assumptions.** Every pre-flight question you did not ask gets written here with the answer you assumed [PF-3].
+14. **A shared component's default changes: walk every caller's flow.** Fill the spec's caller table (caller, flow before, flow after, intended yes/no/unsure; `caller_flows` in the run). Listing the callers is not enough: walk what each one now does. Any "unsure" row stops the run at spec as `decision_required` for the human, never a build assumption [SP-17]. A sheet that turned modal by default once made one caller's question block the screen behind it, and a tap outside discarded unsaved edits.
 
 ## 3. Data-sensitive and destructive changes
 
@@ -49,9 +50,10 @@ Templates: `templates/spec.md` and `templates/plan.md`.
 1. **The plan contains actual code.** Give it top-tier reasoning. Write exact signatures and the code itself. The root-fix task gets checkbox test-first steps: write the failing test, run it and SEE it fail, implement, see it pass, run checks, commit. Other tasks add tests where they change behaviour. Ban "TBD", "add appropriate handling" and "similar to Task N" [PL-2]. A concrete plan lets a cheaper builder simply apply it.
 2. **Return the units as structured data.** Each unit has `id`, `title`, `files`, `depends_on`, `instructions` and `acceptance`. The plan is also saved in the repo, and the build iterates over the returned list. Never hardcode build units in a script written before the plan exists [PL-3]. Hardcoded lists drop units, and half-features nearly ship.
 3. **Vertical slices, scheduled by files.** Each task delivers observable behaviour through a real interface; never split by layer. File overlap is used only to schedule: tasks that share a file never run in the same wave, and the verifier checks scope with `git show --stat HEAD` [PL-4, OR-11].
-4. **Small tasks, marked for independence.** Independent tasks run in parallel, dependent ones in series, and each gets its own verifier and repair loop [PL-5].
-5. **Per-task laws.** Copy the relevant laws into each task, so the verifier can grep for them [SP-14, VF-25].
-6. **Reuse the shared primitives.** Tell build tasks which shared components exist (`ui/` controls, helpers), so they do not re-implement them [UX-6].
+4. **Small tasks, marked for independence.** Independent tasks run in parallel, dependent ones in series, and each gets its own verifier and repair loop [PL-5]. A `depends_on` edge means a task needs another's code, not just its order.
+5. **Report the wave count.** The run computes the waves the scheduler would run. A medium plan with more than two tasks and one task per wave goes back ONCE for a re-plan that asks for parallelism, or for `serial_reason`, the real dependency in one sentence [PL-15]. A nine-task plan once ran as nine waves of one.
+6. **Per-task laws. Copy the relevant laws into each task, so the verifier can grep for them [SP-14, VF-25].
+7. **Reuse the shared primitives. Tell build tasks which shared components exist (`ui/` controls, helpers), so they do not re-implement them [UX-6].
 
 ## 5. Task sizing and ordering
 

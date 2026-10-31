@@ -1,13 +1,17 @@
 // Dry-run templates/workflow.js against mocked agents: exercises the wave scheduler, the repair loop,
 // dead-agent handling, the symptom check, the merged findings list, the compact return cap, the small
 // path, the verification holes (builder report, defect-on-pass, gates commits), stopAfter/resumeFrom,
-// the rendered summary and per-stage metrics. Run: node scripts/test-workflow.mjs
+// the rendered summary, per-stage metrics, and the second-dogfood rules: wave count and one re-plan,
+// SHA-only commit ids, per-acceptance-row negative controls, caller-flow decisions, the behaviour-choice
+// stop in repair, post_install. Run: node scripts/test-workflow.mjs
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 
 const src = readFileSync(new URL('../templates/workflow.js', import.meta.url), 'utf8').replace('export const meta', 'const meta')
 const AsyncFn = Object.getPrototypeOf(async () => {}).constructor
 const wf = new AsyncFn('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', 'budget', src)
+const H = (s) => Buffer.from(s).toString('hex') // a mock commit id that is a valid SHA
+const IS_SHA = /^[0-9a-f]{7,40}$/
 
 const TASKS = [
   { id: 'T1', title: 'root fix', files: ['a.ts'], depends_on: [], instructions: 'x', acceptance: 'y' },
@@ -25,29 +29,31 @@ const FITS = {
 async function run({
   fit = 'reported', rejectOnce = [], dieBuild = [], alwaysReject = [], findings = () => [], userChange = 'Search shows results again.',
   size = 'medium', tasks = TASKS, measured = false, docsImpact = 'none', gatesCommits = [], gatesPass = true, extra = {},
+  serialReason = 'T4 and T5 form a cycle', replanTasks = null, buildCommits = null, verdictExtra = () => ({}), callerFlows = [],
 } = {}) {
   const calls = []
   const seen = {}
   const waves = []
   let spent = 0
-  const specFields = { root_cause: 'r', shared_seam: 'h', mechanism_explains_reported_data: true, user_change: userChange, out_of_scope: [], docs_impact: docsImpact, docs_justification: 'internal' }
+  const specFields = { root_cause: 'r', shared_seam: 'h', mechanism_explains_reported_data: true, user_change: userChange, out_of_scope: [], docs_impact: docsImpact, docs_justification: 'internal', caller_flows: callerFlows }
   const agent = async (prompt, o = {}) => {
     const label = o.label || ''
     calls.push({ label, model: o.model, prompt })
     spent += 1000
     if (label.startsWith('diagnose')) return { method: 'm', findings: 'f', evidence: measured ? ['probe: 0 of 3 rows rendered'] : [], candidates: [{ cause: 'stale cache', rank_p: 0.7, verdict: 'confirmed', evidence: 'e' }], ruled_out: [], open_questions: [], confidence: 'high', decision_required: null }
     if (label === 'spec') return Object.assign({ spec_path: 's.md' }, specFields)
-    if (label === 'plan') return { plan_path: 'p.md', tasks }
+    if (label === 'plan') return { plan_path: 'p.md', tasks, serial_reason: serialReason }
+    if (label === 'replan') return replanTasks ? { plan_path: 'p.md', tasks: replanTasks, serial_reason: null } : { plan_path: 'p.md', tasks, serial_reason: 'each task needs the previous one\'s code' }
     if (label === 'spec plan' || label === 'load plan') return Object.assign({ spec_path: null, plan_path: 'p.md', tasks }, specFields)
     if (label === 'symptom check') return { options: FITS[fit], verdict: 'reported', reason: 'r' } // the model's own verdict is ignored
     if (label === 'verify gates') return { passed: gatesPass, checks: [], unfinished_work: '', code_defect: !gatesPass, summary: '', non_blocking_findings: [] }
     const id = label.split(' ')[1]
-    if (label.startsWith('build')) return dieBuild.includes(id) ? null : { commits: ['sha-' + id], files_changed: [], commands_run: [{ command: 'bun test', output_tail: 'BUILDER-CLAIM all green' }], deviations: ['dev-' + id], notes: 'BUILDER-NOTES trust me' }
-    if (label.startsWith('repair')) return { commits: ['fix-' + id], files_changed: [], commands_run: [], deviations: [] }
+    if (label.startsWith('build')) return dieBuild.includes(id) ? null : { commits: (buildCommits && buildCommits(id)) || [H('sha-' + id)], files_changed: [], commands_run: [{ command: 'bun test', output_tail: 'BUILDER-CLAIM all green' }], deviations: ['dev-' + id], notes: 'BUILDER-NOTES trust me' }
+    if (label.startsWith('repair')) return { commits: [H('fix-' + id + label.split('#')[1])], files_changed: [], commands_run: [], deviations: [] }
     if (label.startsWith('verify') && label !== 'verify docs') {
       seen[id] = (seen[id] || 0) + 1
       const pass = !alwaysReject.includes(id) && !(rejectOnce.includes(id) && seen[id] === 1)
-      return { passed: pass, checks: [], unfinished_work: pass ? '' : 'fix ' + id, code_defect: !pass, summary: '', non_blocking_findings: findings(id, seen[id]) }
+      return Object.assign({ passed: pass, checks: [], unfinished_work: pass ? '' : 'fix ' + id, code_defect: !pass, summary: '', non_blocking_findings: findings(id, seen[id]), negative_controls: [{ row: 'y', result: 'red' }] }, verdictExtra(id, seen[id]))
     }
     if (label === 'completeness') return { missing: [], detail: '' }
     if (label === 'gates') return { head_before: 'pre-gates', all_green: true, gates: [{ command: 'unit', passed: true, skipped: false, output_tail: '' }], failures_fixed: gatesCommits.length ? ['lint in a.ts'] : [], remaining_failures: [], commits: gatesCommits }
@@ -77,7 +83,7 @@ async function run({
   const t1 = res.tasks.find((t) => t.id === 'T1')
   assert.equal(t1.status, 'verified')
   assert.equal(t1.repairs, 1)
-  assert.deepEqual(t1.commits, ['sha-T1', 'fix-T1'])
+  assert.deepEqual(t1.commits, [H('sha-T1'), H('fix-T11')])
   assert.equal(calls.find((c) => c.label.startsWith('repair T1')).model, 'top')
   assert.equal(res.metrics.tasks_with_code_defect, 1)
 }
@@ -138,7 +144,7 @@ async function run({
   assert.ok(res.findings_omitted.bookkeeping > 0)
   assert.ok(res.paths.journal && res.paths.spec && res.paths.plan)
   assert.ok(!('diagnoses' in res) && !('build' in res.tasks[0]), 'stage outputs stay in the journal')
-  assert.ok(Array.isArray(res.commits) && res.commits.includes('sha-T1'))
+  assert.ok(Array.isArray(res.commits) && res.commits.includes(H('sha-T1')))
   // the happy path is small without any clipping
   const { res: small } = await run()
   assert.ok(!small.clipped && JSON.stringify(small).length < 5000)
@@ -148,7 +154,7 @@ async function run({
   const { calls } = await run()
   const v = calls.find((c) => c.label === 'verify T1 #1').prompt
   assert.ok(!/BUILDER-CLAIM|BUILDER-NOTES|commands_run/.test(v), 'builder report leaked into the verifier prompt')
-  assert.ok(v.includes('sha-T1') && v.includes('dev-T1'), 'shas and declared deviations are passed')
+  assert.ok(v.includes(H('sha-T1')) && v.includes('dev-T1'), 'shas and declared deviations are passed')
 }
 // a pass that carries a defect in the task's own files is a rejection; a defect elsewhere is not
 {
@@ -242,5 +248,95 @@ async function run({
   assert.equal(st.reduce((n, x) => n + x.agents, 0), calls.length)
   assert.equal(st.reduce((n, x) => n + x.spent, 0), calls.length * 1000)
   assert.equal(res.metrics.verifier_rejections, 1)
+}
+// the plan reports its waves; a fully serial medium plan gets ONE re-plan for parallelism [PL-15]
+{
+  const chain = ['T1', 'T2', 'T3', 'T4'].map((id, i) => ({ id, title: 's', files: [`f${i}.ts`], depends_on: i ? [`T${i}`] : [], instructions: 'x', acceptance: 'y' }))
+  const par = chain.map((t, i) => Object.assign({}, t, { depends_on: i ? ['T1'] : [] }))
+  const { res, calls, waves } = await run({ tasks: chain, serialReason: null, replanTasks: par })
+  const rp = calls.find((c) => c.label === 'replan')
+  assert.ok(rp && /4 tasks that the scheduler would run in 4 waves/.test(rp.prompt) && /serial_reason/.test(rp.prompt))
+  assert.deepEqual(res.plan_waves, { tasks: 4, waves: 2, serial: false, replanned: true, serial_reason: null })
+  assert.equal(waves.length, 2, 'the re-planned tasks are the ones built')
+  const kept = await run({ tasks: chain, serialReason: null }) // the re-plan keeps serial, with a reason: once only
+  assert.equal(kept.calls.filter((c) => c.label === 'replan').length, 1)
+  assert.match(kept.res.plan_waves.serial_reason, /previous one's code/)
+  assert.ok(!(await run({ tasks: chain })).calls.some((c) => c.label === 'replan'), 'a stated reason needs no re-plan')
+  assert.ok(!(await run({ tasks: par, serialReason: null })).calls.some((c) => c.label === 'replan'), 'a plan with parallel waves needs no re-plan')
+  assert.ok(!(await run({ tasks: chain, serialReason: null, size: 'large' })).calls.some((c) => c.label === 'replan'), 'medium only')
+}
+// a builder report whose commit ids are not SHAs is a builder failure: repair, no verifier [BD-22]
+{
+  const { res, calls } = await run({ buildCommits: (id) => (id === 'T1' ? ['HEAD of fix/1; get SHA with git rev-parse HEAD'] : null) })
+  const t1 = res.tasks.find((t) => t.id === 'T1')
+  assert.ok(!calls.some((c) => c.label === 'verify T1 #1'), 'no verifier runs on a report without SHAs')
+  assert.match(calls.find((c) => c.label === 'repair T1 #1').prompt, /not SHAs: "HEAD of fix\/1/)
+  assert.equal(t1.status, 'verified')
+  assert.equal(t1.repairs, 1)
+  assert.ok(res.commits.every((c) => IS_SHA.test(c)), `non-SHA in commits: ${res.commits}`)
+  assert.equal(res.metrics.bad_commit_reports, 1)
+  assert.equal(res.metrics.verifier_rejections, 0)
+}
+// verifier rubric: wrong persisted state or a security/eligibility hole on this branch is a defect [VF-31]
+{
+  const v = (await run()).calls.find((c) => c.label === 'verify T1 #1').prompt
+  assert.match(v, /Wrong persisted state[^\n]*security or eligibility hole[^\n]*THIS branch's code is a defect, never a follow-up/)
+}
+// a pass needs a red negative control for EVERY acceptance row; infra errors are never RED [VF-3, IS-16]
+{
+  const ve = (id, n) => (id === 'T1' && n === 1 ? { negative_controls: [{ row: 'only verified members can invite', result: 'red' }, { row: 'a removed member cannot vouch', result: 'green' }] } : {})
+  const { res, calls } = await run({ verdictExtra: ve })
+  assert.equal(res.tasks.find((t) => t.id === 'T1').repairs, 1, 'a green row sends the task to repair')
+  assert.match(calls.find((c) => c.label === 'repair T1 #1').prompt, /"a removed member cannot vouch" stays GREEN/)
+  assert.match(calls.find((c) => c.label === 'verify T1 #1').prompt, /one per ACCEPTANCE ROW/)
+  const none = await run({ verdictExtra: (id, n) => (id === 'T2' && n === 1 ? { negative_controls: [] } : {}) })
+  assert.equal(none.res.tasks.find((t) => t.id === 'T2').repairs, 1, 'no recorded control is no pass')
+  const infra = await run({ verdictExtra: (id) => (id === 'T3' ? { negative_controls: [{ row: 'y', result: 'infra_error', detail: 'codegen missing' }] } : {}) })
+  assert.equal(infra.res.tasks.find((t) => t.id === 'T3').repairs, 0, 'an infra error is not a red or a green')
+  assert.ok(infra.res.findings['test-gap'].some((f) => /infrastructure error \(codegen missing\)/.test(f.finding)))
+}
+// a shared component's changed default: an "unsure" caller row stops at spec for the human [SP-17]
+{
+  const { res, calls } = await run({ callerFlows: [
+    { caller: 'photo date question', before: 'answer while the tray stays usable', after: 'blocks the tray until answered', intended: 'unsure' },
+    { caller: 'filter sheet', before: 'modal', after: 'modal', intended: 'yes' },
+  ] })
+  assert.equal(res.status, 'decision_required')
+  assert.equal(res.stage, 'spec')
+  assert.match(res.decision_required, /photo date question/)
+  assert.ok(!/filter sheet/.test(res.decision_required))
+  assert.ok(!calls.some((c) => c.label === 'plan' || c.label.startsWith('build')))
+  assert.match(calls.find((c) => c.label === 'spec').prompt, /walk EVERY caller's flow/)
+}
+// same test, same cause after 2 repairs, and a behaviour choice: stop with decision_required, no third repair [VF-5]
+{
+  const ve = (id) => (id === 'T1' ? { failing_test: 'e2e: tap outside the sheet', failure_cause: 'Undecided: should a tap outside discard unsaved edits?', behaviour_choice: true } : {})
+  const { res, calls } = await run({ alwaysReject: ['T1'], verdictExtra: ve })
+  const t1 = res.tasks.find((t) => t.id === 'T1')
+  assert.equal(t1.status, 'decision_required')
+  assert.equal(calls.filter((c) => c.label.startsWith('repair T1')).length, 2)
+  assert.equal(res.status, 'decision_required')
+  assert.match(res.decision_required, /tap outside discard unsaved edits/)
+  assert.equal(res.tasks.find((t) => t.id === 'T2').status, 'blocked')
+  const code = await run({ alwaysReject: ['T1'], verdictExtra: (id) => Object.assign(ve(id), { behaviour_choice: false }) })
+  assert.equal(code.calls.filter((c) => c.label.startsWith('repair T1')).length, 3, 'a code fault keeps repairing to the cap')
+  assert.equal(code.res.tasks.find((t) => t.id === 'T1').status, 'failed')
+}
+// post_install runs in the control worktree, is never a gate, and an infra error is never RED [IS-16]
+{
+  const { calls } = await run({ extra: { profile: { commands: { install: 'i', post_install: 'fw sync', unit: 'ut' } } } })
+  const v = calls.find((c) => c.label === 'verify T1 #1').prompt
+  assert.match(v, /install there \(i;[^\n]*\), then fw sync,/)
+  assert.match(v, /INFRASTRUCTURE error, never RED/)
+  const g = calls.find((c) => c.label === 'gates').prompt
+  assert.ok(!/-\s+post_install:/.test(g), 'post_install is not a gate')
+  assert.match(g, /run install and fw sync, then rerun/)
+}
+// a shared dev DB and fixed log paths reach every prompt [IS-17, IS-18]
+{
+  const p = (await run({ extra: { profile: { env: { shared_db: true, fixed_paths: ['/tmp/e2e.log'] } } } })).calls[0].prompt
+  assert.match(p, /dev database is SHARED/)
+  assert.match(p, /override them: \/tmp\/e2e\.log/)
+  assert.ok(!/dev database is SHARED/.test((await run()).calls[0].prompt))
 }
 console.log('workflow template: all dry-run checks passed')

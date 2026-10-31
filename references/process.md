@@ -65,7 +65,7 @@ Work:
 - Check that every dependency, data source and access token the plan will lean on is feasible [PF-7, PF-8, PF-9, PF-10].
 - Ask only the questions that change the build, one at a time, each with a recommendation [PF-3]. A fact only the reporter has moves the issue to `needs-info`.
 - Size the run, announce it, and check the concurrency caps [SZ-1, SZ-2].
-- Create the worktree, branch and ports [IS-1, IS-3].
+- Create the worktree, branch and ports [IS-1, IS-3]. With `env.shared_db: true`, warn and hold before launching a run that touches DB functions while another such run is going; check `env.fixed_paths` are overridden per run [IS-17, IS-18].
 
 Exit: the profile is loaded, the report files exist, the size is announced, the worktree is ready, and the open questions are either answered or written down as assumptions.
 
@@ -82,13 +82,14 @@ Exit: either a confirmed cause, or an explicit statement of which candidates rem
 Entry: the diagnoses, verbatim.
 Agents: 1, at a strong tier. It reconciles the diagnosers and reads the code itself wherever they disagree [DG-12]. For a small issue the same agent also writes the plan.
 Work: follow `references/spec-and-plan.md` and write `templates/spec.md` to the spec path.
-Exit: the spec names the root cause and the shared seam, what changes for the user, the scope and the explicit non-scope, the exact user-facing copy, the tests (the diagnosis reproduction, at the highest level that reproduces the symptom, failing before the fix, each naming the interface it drives), the docs impact and the honest risks [SP-4, SP-6, DG-14]. If no diagnosed mechanism produces the reported symptom on the reported data, the spec says so [SP-3].
+Exit: a changed shared-component default has its caller table, and an "unsure" row stops the run as `decision_required` [SP-17]. The spec names the root cause and the shared seam, what changes for the user, the scope and the explicit non-scope, the exact user-facing copy, the tests (the diagnosis reproduction, at the highest level that reproduces the symptom, failing before the fix, each naming the interface it drives), the docs impact and the honest risks [SP-4, SP-6, DG-14]. If no diagnosed mechanism produces the reported symptom on the reported data, the spec says so [SP-3].
 
 ## 5. Stage 3: plan
 
 Entry: the spec.
 Agents: 1, at a top tier, because errors here multiply across every task [PL-2, CO-1].
 Work: write `templates/plan.md`, with actual code and TDD checkboxes. Return the tasks as structured data (id, title, files, depends_on, instructions, acceptance) [PL-2, PL-3]. One task for small, 3 to 9 for medium, capped at about 9 [PL-7]. Each task is a vertical slice; file overlap is used only to schedule waves, so tasks in the same wave touch disjoint files [PL-4]. Docs belong to the docs stage, not to a task.
+The run computes the wave count. A medium plan with more than two tasks and one task per wave goes back once for a re-plan, or for `serial_reason` [PL-15].
 Before build, when no diagnosis measured a reproduction: run the symptom check. Is this plan aimed at the reported symptom or a neighbouring one? Ask it as a ranking question, and compute the verdict from the probabilities: the top two within 0.2 is "close", and close or neighbour goes back to diagnosis [PL-1].
 Exit: the plan file is saved and the task list is parsed. Build iterates over this list and never over a hardcoded one [PL-3].
 
@@ -97,14 +98,14 @@ Exit: the plan file is saved and the task list is parsed. Build iterates over th
 Entry: one plan task plus the preamble.
 Agents: one per task, at the build tier (mid model, medium effort) [CO-1].
 Work: follow the builder rule in `references/verification.md`. Execute the task exactly, run its tests, tick its boxes, commit only its own files plus the ticked plan file in the same commit, and report any deviation [BD-1, BD-2, BD-21].
-Exit: a commit on the issue branch, with trailers, and a report listing the commands run and their real output.
+Exit: a commit on the issue branch, with trailers, and a report listing the commands run and their real output. Commit ids that are not SHAs send the task to repair [BD-22].
 
 ## 7. Stage 5: verify and repair
 
 Entry: the task, the builder's commit, and the spec.
 Agents: one FRESH verifier per task, at the strongest tier, never cheapened [VF-1, VF-6].
 Work: run the rubric in `references/verification.md`, including the negative control in a throwaway worktree with a real dependency install [VF-3, IS-16]. The verifier sees the commits, the task, its acceptance criteria and the builder's declared deviations, never the builder's report [VF-1]. Tag every non-blocking finding with a severity [VF-31].
-Exit: passed, or a repair. A pass that carries a `defect` finding in the task's own files counts as a rejection. Repairs get up to 3 rounds, one tier UP from build, using the verifier's `unfinished_work` verbatim [VF-5]. After the third failure, the task is reported as failed with its evidence. It is never reported as a pass.
+Exit: passed, or a repair. A pass that carries a `defect` finding in the task's own files counts as a rejection. Repairs get up to 3 rounds, one tier UP from build, using the verifier's `unfinished_work` verbatim [VF-5]. After the third failure, the task is reported as failed with its evidence. It is never reported as a pass. The same test failing for the same behaviour-choice cause after two repairs stops the task as `decision_required` [VF-5]. Every acceptance row needs its own red negative control [VF-3].
 
 ## 8. Stage 6: gates
 

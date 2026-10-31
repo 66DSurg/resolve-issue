@@ -11,6 +11,8 @@ Rules for this plan: write ACTUAL code and exact signatures. No "TBD", no "add a
 | 1 | T1 |
 | 2 | T2, T3 |
 
+Waves: <W> for <N> tasks. If W = N on a medium plan, give the real dependency here (`serial_reason`), or the run sends the plan back once for parallelism [PL-15].
+
 ## T1: <title>
 
 - Files: `<path>`, `<path>` (and nothing else)

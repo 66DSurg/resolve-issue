@@ -21,7 +21,7 @@ git fetch origin
 git worktree add -b "<branch_prefix><issue>-<slug>" "<worktrees_dir>/<issue>-<slug>" "origin/<main_branch>"
 cd "<worktree>"
 <install cmd>                 # e.g. bun install / npm ci / uv sync
-<codegen/sync cmd, if any>    # e.g. framework sync, prisma generate
+<post_install cmd, if any>    # profile commands.post_install: framework sync, prisma generate
 # link, never copy, never fake:
 for p in <profile.env.link>; do ln -s "<main_checkout>/$p" "$p"; done
 ```
@@ -29,7 +29,7 @@ for p in <profile.env.link>; do ln -s "<main_checkout>/$p" "$p"; done
 - **Build in a dedicated worktree on its own branch, outside the main checkout** [IS-1]. Every shell command starts with `cd "<worktree>"`, every agent uses its absolute path, and other active worktrees are named as off-limits in the preamble [OR-13]. One 78-minute run broke when a concurrent terminal moved the main checkout's HEAD underneath it.
 - **Prepare the worktree fully** [IS-2]. Install dependencies, run any codegen or sync step, link the real gitignored secrets, and source the main checkout's env file. Never create dummy secrets. A dummy secrets folder once failed 22 specs, and the exit-127 "command not found" errors came from a skipped install.
 - **Never copy secrets.** Link them, and read them from the file straight into the command's environment [PS-16].
-- **Throwaway worktrees (negative controls, bisects) install their own dependencies** with a real frozen-lockfile install. Never symlink dependency directories from another checkout. Link only the env and secrets [IS-16]. Symlinked dependencies resolve modules from the other checkout and break module mocks, so the control fails for the wrong reason.
+- **Throwaway worktrees (negative controls, bisects) install their own dependencies** with a real frozen-lockfile install, then run `commands.post_install`. Never symlink dependency directories from another checkout. Link only the env and secrets [IS-16]. Symlinked dependencies resolve modules from the other checkout and break module mocks, so the control fails for the wrong reason. A test that cannot load (missing codegen, module not found) is an infrastructure error to fix and rerun, never a RED result.
 
 ## 2. Ports and servers
 
@@ -59,6 +59,8 @@ trap cleanup EXIT
 - **Stop background workers that share the test database**, or give the tests their own DB and queue [IS-9]. A dev worker holding a real key once grabbed e2e jobs, billed the API and failed the tests.
 - **When a missing optional service config fails many specs at once, check the environment first** [IS-10]. It is usually a false alarm about the code.
 - **Worktrees sharing one local DB can show false migrate failures.** Judge migrations on a clean database applied in order [IS-11].
+- **A shared dev DB and database functions do not mix across runs** [IS-17]. When the tests apply functions, the last run to apply one wins, so each run tests the other's code. Give each run its own schema or database name. If the project cannot, record `env.shared_db: true` in the profile; pre-flight then warns before launching a second run that touches DB functions while one is going, and the two run one after the other.
+- **Fixed paths in the test runner are shared state too** [IS-18]. Discovery and pre-flight grep the runner and its scripts for fixed log files, temp dirs and sockets, and record them as `env.fixed_paths`. Each run writes logs under `<worktree>/.logs/<port>/` and overrides those paths. Two runs once read each other's logs.
 - **Do not run a test suite while another agent rebuilds the same frontend** [IS-12].
 - **Keep large media and content production out of the product repo**, so clones, CI, worktrees and agents stay fast [IS-13].
 

@@ -13,7 +13,8 @@ When the profile is missing, discover it before the first issue. Do this inline.
 2. **Find the commands.** Read the existing agent-context files (`CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`), `package.json` scripts, `Makefile`, `justfile`, `pyproject.toml`, `Cargo.toml`, the CI workflow files and `scripts/`. The CI files are the most trustworthy source, because they are what actually gates. Record install, typecheck, lint, unit, e2e, build and doc checks, per package for monorepos. Exclude checks that only run in a PR or CI context, such as a docs check that reads the PR's description or changed-file list. Record them as `ci_only`, never in the gate list [TG-34].
 3. **Prove each command.** Run each one once (except e2e if it needs shared resources), and record its runtime and its current failing set. That failing set becomes `known_flaky` only after the human confirms it [TG-8]. A command that does not run is recorded as `broken: <first error line>`, never silently dropped.
 4. **Find the ports.** Find the developer's default dev ports (framework configs, `.env*.example`, proxy configs). They go in `ports.reserved`. Pick a spare range for agents [IS-3].
-5. **Find the env and secrets.** Find the gitignored files and directories a fresh worktree needs (`.env`, `secrets/`, local certs). They go in `env.link`, to be linked and never copied [IS-2].
+5. **Find the env and secrets.** Find the gitignored files and directories a fresh worktree needs (`.env`, `secrets/`, local certs). They go in `env.link`, to be linked and never copied [IS-2]. Find the codegen or sync step a fresh install needs before tests load (framework sync, ORM generate) and record it as `commands.post_install` [IS-16].
+5b. **Find the shared state.** If worktrees share one dev database and the tests apply database functions or migrations, set `env.shared_db: true` [IS-17]. Grep the test runner and its scripts for fixed log files, temp dirs and sockets, and list them in `env.fixed_paths` [IS-18].
 6. **Find the docs.** Look for the changelog and its Unreleased heading, VERSION, user docs, developer docs, the ADR directory, the glossary, the docs index, and doc-check scripts [DC-9].
 7. **Find the tracker.** Find the issue host, the label strings for each canonical role [OR-25], and how issues are closed (`Closes #N`, or a production-gated trailer) [GR-10]. The roles are the `triage` skill's five, `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human` and `wontfix`, plus `in-progress` and `keep-open`. Record only the ones whose label string differs from the role name.
 8. **Find the commit conventions.** Read `git log -50 --format='%s%n%b'` for the subject format and trailers. Ask the human which trailers agents must add [GR-4].
@@ -61,9 +62,14 @@ budget:
   e2e_in_worktree: false
 ranker:
   cmd: null                      # null = rank explicitly in the prompt
+commands:
+  post_install: null             # codegen/sync after install; fresh and control worktrees run it [IS-16]
+env:
+  shared_db: false               # true: worktrees share one dev DB; pre-flight warns on concurrent DB-function runs [IS-17]
+  fixed_paths: []                # fixed log/temp paths in the test runner; runs override them [IS-18]
 ```
 
-No default exists for `commands`, `ports`, `env`, `laws` or `privacy.identifier_patterns`. Discovery finds them, and never guesses [PF-3].
+No other default exists for `commands`, `ports`, `env`, `laws` or `privacy.identifier_patterns`. Discovery finds them, and never guesses [PF-3].
 
 ## Schema
 

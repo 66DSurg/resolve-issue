@@ -37,7 +37,7 @@ human: {tests_on: staging}
 # agent_docs: <dir or null>       # docs/agents/ if present; read, never copied
 # commands:                       # each proven to run; per-package keys allowed
 #   install: <cmd>
-#   codegen: <cmd or null>
+#   post_install: <cmd or null>   # codegen/sync after install (fresh and control worktrees) [IS-16]
 #   typecheck: <cmd>
 #   lint: <cmd>
 #   unit: <cmd>
@@ -53,6 +53,8 @@ human: {tests_on: staging}
 # env:
 #   link: [<gitignored paths to symlink into each worktree>]
 #   source: <env file the tests need, or null>
+#   shared_db: false              # true: worktrees share one dev DB [IS-17]
+#   fixed_paths: [<fixed log/temp paths in the test runner>]   # [IS-18]
 # worktrees_dir: ../<repo>-worktrees
 # branch_prefix: fix/
 # spec_dir: docs/issues           # 'none' → a scratch directory

@@ -22,6 +22,8 @@ Put this in every build prompt:
 
 > Execute the plan's task exactly. Run its tests, tick its checkboxes, and commit the ticked plan file together with your own files, by explicit path, in the task commit. If the plan's code does not compile against reality, fix it to match and REPORT the deviation. Report the commands you ran and their real output. Only do the task you are given: do not invent additional work [BD-1, BD-2].
 
+Commit ids in the builder's report must be real SHAs (`/^[0-9a-f]{7,40}$/`), checked in code. A report with a placeholder such as "HEAD of <branch>" is a builder failure and goes straight to repair, without a verifier [BD-22].
+
 Ticks left uncommitted dirty the tree and turn up as noise in every verifier report, so they go in the task commit, or the plan drops checkboxes [BD-21]. The middle rule is the one that worked. Builders that redesigned freely broke parallel slices, and builders that applied broken code blindly broke the build.
 
 - **Zero new dependencies by default.** If one seems necessary, stop and note it. When it is allowed, pin the exact version and install it in the worktree [BD-15].
@@ -79,6 +81,10 @@ Checklist. Each item exists because a verifier once missed that class of defect 
 
 **Prove the regression test can fail** [VF-3]. Stash or revert the fix, or plant a bad input, and watch the test go red. Then restore. A test that passes on the old code and the new code alike proves nothing.
 
+**One control per acceptance row, not per task** [VF-3]. For each row, remove only the guard that row is about and run its tests. Each row is recorded in `negative_controls` as `red`, `green` or `infra_error`. A `green` row, or no controls at all, turns a pass into a repair. One proven row says nothing about the next: a mutation check once found an eligibility row whose own tests stayed green with its guard removed.
+
+**An infrastructure error is never RED** [IS-16]. After the install, run the profile's `commands.post_install` (codegen, framework sync). A test that cannot load (module not found, missing codegen, install error) is a setup problem: fix it and rerun. If you cannot, record `infra_error`, which reaches the findings as a test gap.
+
 - In a shared worktree, do it in a throwaway detached worktree, never by stashing where other tasks are live. That throwaway worktree gets a **real dependency install** (a frozen-lockfile install), never dependency directories symlinked from another checkout. Link only the env and secrets [IS-16]. Symlinked dependencies resolve modules from the other checkout, module mocks break, and the control goes red for the wrong reason.
 
 - Assertions must fail on the bad outcome, not merely "not throw".
@@ -99,7 +105,7 @@ Checklist. Each item exists because a verifier once missed that class of defect 
 }
 ```
 
-Every non-blocking finding carries a severity: `defect` (wrong behaviour a user could hit), `test-gap`, `doc-copy` (wrong or misleading text), `follow-up` (real but out of scope) or `bookkeeping`. The run merges all verifiers' findings into one deduped list, keeping the most severe tag on a duplicate, and the summary lists defects and test gaps first [VF-31].
+Every non-blocking finding carries a severity: `defect` (wrong behaviour a user could hit, wrong persisted state, or a security or eligibility hole in this branch's code; never filed as a follow-up), `test-gap`, `doc-copy` (wrong or misleading text), `follow-up` (real but out of scope) or `bookkeeping`. The run merges all verifiers' findings into one deduped list, keeping the most severe tag on a duplicate, and the summary lists defects and test gaps first [VF-31].
 
 **A pass that carries a `defect` finding in the task's own files is a rejection.** The run turns it into `unfinished_work` and sends it to repair, so a defect never rides along on a green verdict [VF-11].
 
@@ -111,6 +117,7 @@ Every non-blocking finding carries a severity: `defect` (wrong behaviour a user 
 - The repair prompt is: "A previous attempt was rejected. Fix exactly this:" followed by `unfinished_work`, verbatim.
 - A null verdict (the verifier died) means re-verify, never pass [OR-9].
 - After the third failure, report the task as failed, with the evidence.
+- **A behaviour choice stops the loop.** A failing verdict names `failing_test`, `failure_cause` and `behaviour_choice`. When the same test fails for the same cause after two repairs and the cause is an undecided product behaviour, the task stops as `decision_required` with the question for the human. No third repair [VF-5].
 
 **Re-triage "non-blocking" findings by severity**, from the merged list, defects and test gaps first. Several turn out to be real: a 500 where a 400 belonged, an empty input reaching a payment provider as an opaque 502, a silent fail-open, a page stuck on Loading [VF-11, VF-31].
 
