@@ -26,14 +26,15 @@ The human may be reading on a phone, between other work, with no time for transc
 
 ## The end-of-run summary
 
-Use this shape. Keep it short enough to read on a phone [CM-7].
+Use this shape. Keep it short enough to read on a phone [CM-7]. Findings come from the run's merged list, defects and test gaps first, never bookkeeping first [VF-31].
 
 ```
 <issue id> <title>: <verified | partially verified | failed>
 Root cause: <one sentence>. Confirmed by: <probe/test, measured value>.
 Ranking: <top option p=…, runner-up p=…>; <overruled by evidence: … | not overruled>.
 What changes for the user: <one or two plain sentences>.
-Gates: typecheck ✓ lint ✓ unit 412/412 ✓ e2e skipped (shared DB; run at merge) build ✓ docs ✓
+Gates: typecheck ✓ lint ✓ unit 412/412 ✓ e2e skipped (shared DB; run at merge) build ✓ docs ✓ (PR-only check: ci_only)
+Findings: defects <n, fixed or open>; test gaps <n>; doc/copy <n>; follow-ups filed <n>
 Commits (git log <base>..HEAD):
   abc1234 <subject>
   def5678 <subject>

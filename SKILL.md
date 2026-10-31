@@ -99,14 +99,14 @@ Stage detail lives in these files, which you should read when that stage runs or
 
 ## Step 4: after the run returns, audit before you believe it
 
-Subagents misreport, and runtimes delete files. Do all of the following before you say anything is done [VF-10, VF-15, OR-17]:
+Subagents misreport, and runtimes delete files. The run returns a compact result (status, root cause, gates table, commits, merged findings by severity, follow-ups) and keeps the full stage outputs in its journal and in the spec and plan files [OR-26]. Read the compact result, open the journal only for what it points to, and do all of the following before you say anything is done [VF-10, VF-15, OR-17]:
 
 1. Run `git status` and `git ls-files -d` in the worktree. Restore unexpected deletions without touching new work [VF-15].
 2. Run `git log <base>..HEAD` and check that every commit carries the required trailers. An unattributed commit counts as rogue until it is explained [GR-4].
 3. Cross-check the plan's unit list against the tree. A planned unit with no implementation is a STOP, so dispatch a completion agent for exactly those units [VF-13, OR-10].
-4. Re-run the gates yourself. Save the full output and grep all of it for `failed` [VF-10, TG-2].
+4. Re-run the gates yourself, independently of the run's gates agent, from the profile's gate list. Save the full output and grep all of it for `failed` [VF-10, TG-2]. Checks recorded as `ci_only` need a PR or CI context and are not local gates. If one sits in the gate list and fails for that reason, move it to `ci_only` in the profile rather than calling the run red [TG-34].
 5. Confirm that every server the run started is gone and the developer's ports are untouched [IS-8].
-6. Re-read every finding a verifier marked "non-blocking". Several such findings turn out to be real defects [VF-11].
+6. Re-triage the merged findings list, defects and test gaps first [VF-31]. "Non-blocking" is the verifier's opinion, not a verdict: re-read each finding against the code and promote any that a user could hit (a page stuck loading, a raw 500, misleading copy). Fix real defects before handoff, and file follow-ups as issues [VF-11].
 
 ## Step 5: hand off and stop
 

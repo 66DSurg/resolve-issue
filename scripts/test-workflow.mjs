@@ -1,5 +1,5 @@
 // Dry-run templates/workflow.js against mocked agents: exercises the wave scheduler,
-// the repair loop, dead-agent handling and the symptom check. Run: node scripts/test-workflow.mjs
+// the repair loop, dead-agent handling, the symptom check, the merged findings list and the compact return cap. Run: node scripts/test-workflow.mjs
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 
@@ -15,7 +15,7 @@ const TASKS = [
   { id: 'T5', title: 'cycle', files: ['d.ts'], depends_on: ['T4'], instructions: 'x', acceptance: 'y' },
 ]
 
-async function run({ fit = 'reported', rejectOnce = [], dieBuild = [], alwaysReject = [] } = {}) {
+async function run({ fit = 'reported', rejectOnce = [], dieBuild = [], alwaysReject = [], findings = () => [], summary = 'summary text' } = {}) {
   const calls = []
   const seen = {}
   const waves = []
@@ -32,12 +32,12 @@ async function run({ fit = 'reported', rejectOnce = [], dieBuild = [], alwaysRej
     if (label.startsWith('verify') && label !== 'verify docs') {
       seen[id] = (seen[id] || 0) + 1
       const pass = !alwaysReject.includes(id) && !(rejectOnce.includes(id) && seen[id] === 1)
-      return { passed: pass, checks: [], unfinished_work: pass ? '' : 'fix ' + id, code_defect: !pass, summary: '' }
+      return { passed: pass, checks: [], unfinished_work: pass ? '' : 'fix ' + id, code_defect: !pass, summary: '', non_blocking_findings: findings(id, seen[id]) }
     }
     if (label === 'completeness') return { missing: [], detail: '' }
     if (label === 'gates') return { all_green: true, gates: [], failures_fixed: [], remaining_failures: [] }
     if (label === 'docs') return { docs_impact: 'none', justification: 'internal', files: [] }
-    if (label === 'summary') return 'summary text'
+    if (label === 'summary') return summary
     throw new Error('unexpected label ' + label)
   }
   const parallel = async (thunks) => Promise.all(thunks.map((t) => t().catch(() => null)))
@@ -86,5 +86,46 @@ async function run({ fit = 'reported', rejectOnce = [], dieBuild = [], alwaysRej
   const { res, calls } = await run({ fit: 'neighbour' })
   assert.equal(res.status, 'plan_mismatch')
   assert.ok(!calls.some((c) => c.label.startsWith('build')))
+}
+// findings from every verifier are merged into one deduped list, tagged by severity, defects first [VF-31]
+{
+  const f = (id) => [
+    { severity: 'bookkeeping', finding: 'Plan checkbox ticked but not committed.' },
+    { severity: 'follow-up', finding: 'Rename the helper module' },
+    ...(id === 'T2' ? [{ severity: 'doc-copy', finding: 'Settings page stuck on Loading when the list is empty' }] : []),
+    ...(id === 'T3' ? [{ severity: 'defect', finding: 'settings page stuck on loading when the list is empty.' }, 'raw 500 on bad input'] : []),
+    ...(id === 'T4' ? [{ severity: 'test-gap', finding: 'no test for the empty list' }] : []),
+  ]
+  const { res } = await run({ rejectOnce: ['T1'], findings: f })
+  const F = res.findings
+  assert.deepEqual(Object.keys(F), ['defect', 'test-gap', 'doc-copy', 'follow-up', 'bookkeeping'])
+  assert.equal(F.bookkeeping.length, 1, 'the same note from 6 verdicts is one finding')
+  assert.equal(F.bookkeeping[0].sources.length, 5)
+  const stuck = F.defect.find((x) => /stuck on loading/i.test(x.finding))
+  assert.ok(stuck, 'duplicate tagged doc-copy and defect keeps the more severe tag')
+  assert.deepEqual(stuck.sources.sort(), ['T2', 'T3'])
+  assert.equal(F['doc-copy'].length, 0)
+  assert.ok(F.defect.some((x) => x.finding === 'raw 500 on bad input'), 'an untagged finding is triaged as a defect')
+  assert.equal(F['test-gap'].length, 1)
+  assert.ok(res.follow_ups.includes('Rename the helper module'))
+}
+// the return is compact: capped, defects survive, large outputs referenced by path, not inlined [OR-26]
+{
+  const big = 'x'.repeat(5000)
+  const f = (id, n) => Array.from({ length: 30 }, (_, i) => ({ severity: ['defect', 'bookkeeping', 'follow-up'][i % 3], finding: `${id} round ${n} item ${i} ${big}` }))
+  const { res } = await run({ findings: f, summary: 'S'.repeat(300000) })
+  const size = JSON.stringify(res).length
+  assert.ok(size <= 20000, `return is ${size} chars`)
+  assert.equal(res.return_chars, size)
+  assert.ok(res.clipped)
+  assert.ok(res.findings.defect.length > 0, 'defects are kept when the rest is dropped')
+  assert.equal(res.findings.bookkeeping.length, 0)
+  assert.ok(res.findings_omitted.bookkeeping > 0)
+  assert.ok(res.paths.journal && res.paths.spec && res.paths.plan)
+  assert.ok(!('diagnoses' in res) && !('build' in res.tasks[0]), 'stage outputs stay in the journal')
+  assert.ok(Array.isArray(res.commits) && res.commits.includes('sha-T1'))
+  // the happy path is small without any clipping
+  const { res: small } = await run()
+  assert.ok(!small.clipped && JSON.stringify(small).length < 5000)
 }
 console.log('workflow template: all dry-run checks passed')

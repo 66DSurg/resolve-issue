@@ -40,7 +40,9 @@ This file gives the entry criteria, work, output and exit criteria for every sta
 
 **Long e2e in the foreground.** An agent that runs a long suite does so in the foreground, with a long explicit timeout, and commits in the same turn. You check git status after every run and finish anything that stalled [OR-17].
 
-**Structured returns.** Every run returns the diagnosis, the plan path, per-task results (attempts, verdicts, unfinished work), gates and docs as data [OR-18]. That data feeds the summary, the post-run audit and the repair-rate metric [CO-2].
+**Structured, compact returns.** Every run returns its result as data [OR-18]: status, root cause, a gates table, the commit list, per-task status and unfinished work, the merged findings by severity, and the follow-up issues to file. Keep it compact and capped (about 20 KB). Large per-stage outputs (diagnoses, build reports, verdicts, gate logs) stay in the run journal and in files, referenced by path [OR-26]. That data feeds the summary, the post-run audit and the repair-rate metric [CO-2].
+
+**One findings list.** The run merges every verifier's non-blocking findings into one deduped list. Each finding carries a severity (defect, test-gap, doc-copy, follow-up, bookkeeping), and the most severe tag wins on a duplicate. The summary and the post-run audit work from that list, defects and test gaps first [VF-31].
 
 **Build in parallel, release serially.** The version and changelog are singletons. Parallel runs end in one integrated release, done in the main loop, and each release re-reads the current version fresh [OR-15, GR-9].
 
@@ -86,14 +88,14 @@ Exit: the plan file is saved and the task list is parsed. Build iterates over th
 
 Entry: one plan task plus the preamble.
 Agents: one per task, at the build tier (mid model, medium effort) [CO-1].
-Work: follow the builder rule in `references/verification.md`. Execute the task exactly, tick its boxes, run its tests, commit only its own files, and report any deviation [BD-1, BD-2].
+Work: follow the builder rule in `references/verification.md`. Execute the task exactly, run its tests, tick its boxes, commit only its own files plus the ticked plan file in the same commit, and report any deviation [BD-1, BD-2, BD-21].
 Exit: a commit on the issue branch, with trailers, and a report listing the commands run and their real output.
 
 ## 7. Stage 5: verify and repair
 
 Entry: the task, the builder's commit, and the spec.
 Agents: one FRESH verifier per task, at the strongest tier, never cheapened [VF-1, VF-6].
-Work: run the rubric in `references/verification.md`, including the negative control [VF-3].
+Work: run the rubric in `references/verification.md`, including the negative control in a throwaway worktree with a real dependency install [VF-3, IS-16]. Tag every non-blocking finding with a severity [VF-31].
 Exit: passed, or a repair. Repairs get up to 3 rounds, one tier UP from build, using the verifier's `unfinished_work` verbatim [VF-5]. After the third failure, the task is reported as failed with its evidence. It is never reported as a pass.
 
 ## 8. Stage 6: gates
@@ -101,7 +103,7 @@ Exit: passed, or a repair. Repairs get up to 3 rounds, one tier UP from build, u
 Entry: all tasks are either verified or reported failed.
 Agents: 1, mid tier at medium effort or higher, because it can commit [TG-32].
 Work: follow `references/tests-and-gates.md`. Run the full gate list from the profile, save the logs, grep for failures, compare against the known-flaky set, and fix and commit as it goes. Weakening a test is not allowed [TG-6, TG-7].
-Exit: a structured gates result. Skipped gates are reported as skipped [TG-10].
+Exit: a structured gates result. Skipped gates are reported as skipped [TG-10]. Checks that need a PR or CI context are listed as `ci_only`, not run [TG-34].
 
 ## 9. Stage 7: docs
 

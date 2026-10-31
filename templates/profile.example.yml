@@ -21,6 +21,11 @@ commands:
     - bun scripts/docs/check_links.js
     - bun scripts/docs/check_version_consistency.js
 
+# Checks that need a PR or CI context (PR metadata, CI-only variables). They are
+# never local gates, and the gates stage reports them as ci_only.
+ci_only:
+  - bun scripts/docs/check_pr_docs_impact.js
+
 # The SET of specs known to flake. Only a failure inside this set is non-blocking.
 known_flaky:
   - tests/e2e/upload-large.spec.ts

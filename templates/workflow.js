@@ -24,7 +24,10 @@
 //   otherWorktrees: [],
 //   maxParallel:  4,
 // }
-// Returns structured run data for the post-run audit and the summary [OR-18].
+// Returns a COMPACT result for the post-run audit and the summary [OR-18, OR-26]: status, root cause,
+// a gates table, the commit list, merged and deduped findings by severity [VF-31], follow-ups to file,
+// and paths. Capped at RETURN_CAP characters; full per-stage outputs stay in the run journal and in
+// the spec and plan files.
 // The run ends at a verified branch. It never pushes, tags or releases [HG-1].
 
 export const meta = {
@@ -50,6 +53,8 @@ const ISSUE = A.issue || { id: '?', title: '?' }
 const SIZE = A.size || 'medium'
 const MAX_PAR = Math.max(1, A.maxParallel || (P.budget && P.budget.max_parallel_builders) || 4)
 const REPAIR_ROUNDS = 3 // [VF-5]
+const RETURN_CAP = 20000 // characters of JSON returned to the main loop [OR-26]
+const SEVERITIES = ['defect', 'test-gap', 'doc-copy', 'follow-up', 'bookkeeping'] // triage order [VF-31]
 
 // ---------- helpers ----------
 
@@ -104,6 +109,8 @@ Glossary: ${(P.docs && P.docs.glossary) || 'n/a'}. ADRs: ${(P.docs && P.docs.adr
 
 Project commands:
 ${cmds()}
+CI-only checks (they need a PR or CI context; never run them as gates, report them as ci_only) [TG-34]:
+${list(P.ci_only)}
 Env: source ${(P.env && P.env.source) || '(none)'} before tests. Secrets are LINKED from the main checkout; never create dummy secrets or copy secret values.
 Ports: use ONLY backend ${A.ports && A.ports.backend} and frontend ${A.ports && A.ports.frontend} with strict-port flags. NEVER use ${((P.ports && P.ports.reserved) || []).join(', ') || 'the developer default ports'}. Check ownership with lsof before starting a server; kill every server you started before you finish.
 Search with \`command grep -rn\` or \`rg\` (shell wrappers can skip files).
@@ -216,7 +223,18 @@ const VERDICT = {
     checks: { type: 'array', items: { type: 'object', properties: { check: { type: 'string' }, ok: { type: 'boolean' }, detail: { type: 'string' } }, required: ['check', 'ok', 'detail'] } },
     unfinished_work: { type: 'string', description: 'precise, naming files and symbols; empty if passed' },
     code_defect: { type: 'boolean', description: 'true ONLY for real logic defects, not bookkeeping' },
-    non_blocking_findings: { type: 'array', items: { type: 'string' } },
+    non_blocking_findings: {
+      type: 'array',
+      description: 'everything you noticed that did not fail the task, each tagged with a severity [VF-31]',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: SEVERITIES, description: 'defect = wrong behaviour a user could hit; test-gap = untested path; doc-copy = wrong or misleading text; follow-up = real but out of scope; bookkeeping = trailers, ticks, formatting' },
+          finding: { type: 'string', description: 'one sentence, naming file:line or the screen' },
+        },
+        required: ['severity', 'finding'],
+      },
+    },
     summary: { type: 'string' },
   },
   required: ['passed', 'checks', 'unfinished_work', 'code_defect', 'summary'],
@@ -234,6 +252,8 @@ const GATES = {
     all_green: { type: 'boolean' },
     gates: { type: 'array', items: { type: 'object', properties: { command: { type: 'string' }, passed: { type: 'boolean' }, skipped: { type: 'boolean' }, output_tail: { type: 'string' }, log_path: { type: 'string' } }, required: ['command', 'passed', 'skipped', 'output_tail'] } },
     failures_fixed: { type: 'array', items: { type: 'string' } },
+    commits: { type: 'array', items: { type: 'string' } },
+    ci_only: { type: 'array', items: { type: 'string' }, description: 'profile checks not run because they need a PR or CI context' },
     remaining_failures: { type: 'array', items: { type: 'string' } },
     known_flaky_matched: { type: 'array', items: { type: 'string' } },
   },
@@ -247,6 +267,7 @@ const DOCS = {
     justification: { type: 'string' },
     files: { type: 'array', items: { type: 'string' } },
     changelog_entry: { type: 'string' },
+    commits: { type: 'array', items: { type: 'string' } },
     checks: { type: 'array', items: { type: 'object', properties: { command: { type: 'string' }, passed: { type: 'boolean' } }, required: ['command', 'passed'] } },
   },
   required: ['docs_impact', 'justification', 'files'],
@@ -303,7 +324,7 @@ ${PREAMBLE}`
 
 const buildPrompt = (t, prefix) => `${prefix || ''}You are the BUILDER for task ${t.id} of issue ${ISSUE.id}: ${t.title}.
 Files you may touch (and nothing else): ${t.files.join(', ')}
-Execute the plan's task exactly: tick its checkboxes in ${A.planPath}, run its tests, commit ONLY your own files by explicit path.
+Execute the plan's task exactly: run its tests, tick its checkboxes in ${A.planPath}, and commit the ticked plan file TOGETHER with your own files, by explicit path, in the task commit. Never leave ticks uncommitted [BD-21].
 If the plan's code does not compile against reality, fix it to match and REPORT the deviation. Report the commands you ran and their real output.
 Only do the task you are given; do not invent additional work. Do not add dependencies; if one seems necessary, stop and report.
 Run typecheck/build for what you touched, not the full browser suites. When you add a field, grep every write path and validator; when you add an export, update every mock of that module.
@@ -317,17 +338,18 @@ You did not write this. Assume it is wrong until your own commands prove otherwi
 Authority order: mockup > spec (${A.specPath}) > plan (${A.planPath}). Commits to check: ${shas.join(' ') || '(none reported: find them with git log)'}.
 Implementer's report (do not trust it): ${JSON.stringify(b)}
 Checklist (record every item in checks):
-1. Scope: \`git show --stat <sha>\` for each commit touches only: ${t.files.join(', ')} (plus the plan's checkboxes).
+1. Scope: \`git show --stat <sha>\` for each commit touches only: ${t.files.join(', ')} (plus its ticks in ${A.planPath}).
 2. The named tests exist AND pass when YOU run them. 3. Typecheck and lint are clean.
-4. Each commit has the required trailers and issue tag. 5. No TODO/FIXME/"not implemented" in the diff. 6. The task's plan checkboxes are ticked.
+4. Each commit has the required trailers and issue tag. 5. No TODO/FIXME/"not implemented" in the diff. 6. The task's plan checkboxes are ticked IN A COMMIT. Ignore uncommitted plan ticks in the working tree; they are another task's, not a finding [BD-21].
 7. Law checks by grep (every numbered law; destructive DDL; new unique constraints; secrets; sensitive identifiers in fixtures, commits or docs).
-8. NEGATIVE CONTROL: prove the regression test can fail. Make a throwaway detached worktree at the last sha (outside ${A.worktree}), link its dependency and env dirs from ${A.worktree},
+8. NEGATIVE CONTROL: prove the regression test can fail. Make a throwaway detached worktree at the last sha (outside ${A.worktree}), run a REAL dependency install there (${(P.commands && P.commands.install) || 'the frozen-lockfile install'}; never symlink dependency dirs, module mocks break) and link only the env and secrets [IS-16],
    restore ONLY the non-test files to their pre-task versions there, run the test, and expect RED. Then remove the throwaway worktree. Never stash or revert inside ${A.worktree}; other tasks are live there.
    The assertions must fail on the bad outcome (not merely "not throw"), and the component under test must not be mocked.
 9. The reported symptom (${A.reportPath}) is resolved for the reporter's data shape; reason explicitly about those rows.
 10. Claims in docs and comments are true. 11. The feature is reachable from the UI. 12. Any gate is correct in both directions (no leak, full coverage).
 13. None of the known build pitfalls: stripped fields, orphaned triggers, cache-masked indicators, unhandled promise chains, route order, effect loops, silent not_configured, hardcoded formats.
 Kill any server you start. code_defect=true ONLY for real logic defects, not bookkeeping. unfinished_work must name files and symbols precisely.
+Put everything else you noticed in non_blocking_findings, each with a severity (defect | test-gap | doc-copy | follow-up | bookkeeping). Tag honestly: a reachable wrong behaviour (a page stuck loading, a raw 500, misleading copy) is a defect or doc-copy even if it is outside this task [VF-31, VF-11].
 ${PREAMBLE}`
 
 const repairPrompt = (t, v) => `You are REPAIRING task ${t.id} of issue ${ISSUE.id}: ${t.title}. A previous attempt was rejected by an independent verifier. Fix EXACTLY this:
@@ -347,6 +369,7 @@ const gatesPrompt = () => `You are the GATES agent for issue ${ISSUE.id}. Run th
 E2E in this run: ${A.e2e ? `YES. Use the isolated runner on the assigned ports${P.commands && P.commands.e2e_isolated ? ` (${P.commands.e2e_isolated})` : ''}; run it in the foreground with a long timeout` : 'NO. Report e2e as skipped (it runs from the main checkout at merge). Never report skipped as passed'}.
 For each gate: save the FULL output to a log file, grep ALL of it for "failed" and "flaky", and record the exit code separately from your own grep's exit code.
 Known-flaky SET: ${JSON.stringify(P.known_flaky || [])}. A failure inside this set is non-blocking ONLY if it matches. A new failure in the touched area blocks.
+Do NOT run the CI-only checks from the shared context (they fail outside a PR or CI by design); list them in ci_only [TG-34]. Return the SHAs of any commits you make in commits.
 To triage a red spec, run it alone and in the full run; require green twice in a row.
 Change a TEST only when it asserts behaviour the app deliberately no longer has, and cite the commit. Never skip, retry-wrap, raise timeouts, loosen or weaken anything. If that seems necessary, stop and report.
 Failures in the shared environment that are not caused by this branch: report them and change nothing. Kill every server you start and prove zero listeners on the run's ports at the end.
@@ -358,11 +381,12 @@ and the changelog under "${(P.docs && P.docs.unreleased_heading) || '## Unreleas
 Link the spec and plan from ${(P.docs && P.docs.index) || 'the docs index'}. Add an ADR only if the decision is hard to reverse, surprising and a real trade-off, grounded in cited evidence, with the rankings and any overrules.
 Never document behaviour that cannot fire. Check every sentence against the code. Run the doc checks. Commit explicit paths.
 If not affected: docs_impact="none" with a real justification.
-Gates result: ${JSON.stringify(gates)}
+Gates result: ${JSON.stringify(gates).slice(0, 8000)}
 ${PREAMBLE}`
 
 const docsVerifyPrompt = (d) => `You are an ADVERSARIAL VERIFIER of documentation for issue ${ISSUE.id}. For every claim in these changed docs, find the code that makes it true, or fail it.
 Check that the changelog entry is under the Unreleased heading and claims only what shipped. Fix nothing.
+Tag every non-blocking finding with a severity (defect | test-gap | doc-copy | follow-up | bookkeeping) [VF-31].
 Docs result: ${JSON.stringify(d)}
 ${PREAMBLE}`
 
@@ -390,6 +414,87 @@ async function runTask(t, prefix) {
   return { id: t.id, title: t.title, status: 'failed', reason: 'rejected after repairs', unfinished_work: v.unfinished_work, commits: shas, attempts, build: b, repairs: REPAIR_ROUNDS }
 }
 
+// ---------- findings and the compact return [VF-31, OR-26] ----------
+
+// One list from every verifier: dedupe on normalised text, keep the most severe tag, record which tasks said it.
+function mergeFindings(r) {
+  const merged = new Map()
+  const add = (f, source) => {
+    const item = typeof f === 'string' ? { finding: f } : f || {}
+    if (!item.finding) return
+    const sev = SEVERITIES.includes(item.severity) ? item.severity : 'defect' // untagged counts as a defect, so it gets re-read
+    const key = String(item.finding).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+    const prev = merged.get(key)
+    if (!prev) return merged.set(key, { severity: sev, finding: item.finding, sources: [source] })
+    if (SEVERITIES.indexOf(sev) < SEVERITIES.indexOf(prev.severity)) prev.severity = sev
+    if (!prev.sources.includes(source)) prev.sources.push(source)
+  }
+  for (const t of r.tasks || []) for (const a of (t && t.attempts) || []) for (const f of a.non_blocking || []) add(f, t.id)
+  for (const f of (r.docs_verdict && r.docs_verdict.non_blocking_findings) || []) add(f, 'docs')
+  const out = {}
+  for (const sev of SEVERITIES) out[sev] = []
+  for (const m of merged.values()) out[m.severity].push(m)
+  return out
+}
+
+function compact(r) {
+  const findings = mergeFindings(r)
+  const g = r.gates
+  const commits = [...new Set([].concat(...(r.tasks || []).map((t) => (t && t.commits) || []), (g && g.commits) || [], (r.docs && r.docs.commits) || []))]
+  return {
+    issue: r.issue, size: r.size, status: r.status, stage: r.stage || null, reason: r.reason || null,
+    decision_required: r.decision_required || null,
+    root_cause: r.spec ? r.spec.root_cause : (r.diagnoses || []).map((d) => d.findings).join(' | ') || null,
+    shared_seam: (r.spec && r.spec.shared_seam) || null,
+    symptom_check: r.symptom_check ? { verdict: r.symptom_check.verdict, reason: r.symptom_check.reason } : null,
+    paths: {
+      spec: (r.spec && r.spec.spec_path) || A.specPath || null,
+      plan: (r.plan && r.plan.plan_path) || A.planPath || null,
+      gate_logs: g ? (g.gates || []).map((x) => x.log_path).filter(Boolean) : [],
+      journal: 'full diagnoses, build reports, verdicts and gate output are in this run\'s journal',
+    },
+    tasks: (r.tasks || []).map((t) => t && { id: t.id, title: t.title, status: t.status, reason: t.reason, repairs: t.repairs, commits: t.commits || [], unfinished_work: t.unfinished_work, completion: t.completion }),
+    gates: g ? {
+      all_green: g.all_green,
+      table: (g.gates || []).map((x) => ({ command: x.command, passed: x.passed, skipped: x.skipped, log_path: x.log_path })),
+      remaining_failures: g.remaining_failures || [], known_flaky_matched: g.known_flaky_matched || [], ci_only: g.ci_only || P.ci_only || [],
+    } : null,
+    docs: r.docs ? { docs_impact: r.docs.docs_impact, justification: r.docs.justification, files: r.docs.files, verified: r.docs_verdict ? r.docs_verdict.passed : null } : null,
+    commits,
+    findings, // defects and test gaps first; the post-run audit re-triages this list [VF-11]
+    follow_ups: findings['follow-up'].map((f) => f.finding).concat((r.spec && r.spec.out_of_scope) || []),
+    manual_checks: (r.spec && r.spec.manual_checks) || [],
+    metrics: r.metrics || null,
+    summary: r.summary || null,
+  }
+}
+
+// Shrink until it fits: clip prose, then drop the lowest severities. Defects and test gaps go last.
+function capReturn(c) {
+  const size = () => JSON.stringify(c).length
+  const clip = (x, n) => (typeof x === 'string' && x.length > n ? x.slice(0, n) + ' …[clipped; see journal]' : x)
+  const clipAll = (n) => {
+    c.summary = clip(c.summary, n * 4); c.root_cause = clip(c.root_cause, n); c.decision_required = clip(c.decision_required, n * 4)
+    for (const sev of SEVERITIES) c.findings[sev].forEach((f) => { f.finding = clip(f.finding, n) })
+    c.follow_ups = c.follow_ups.map((f) => clip(f, n))
+    c.tasks.forEach((t) => { if (t) t.unfinished_work = clip(t.unfinished_work, n) })
+  }
+  const drop = (sev) => { c.findings_omitted = Object.assign(c.findings_omitted || {}, { [sev]: c.findings[sev].length }); c.findings[sev] = [] }
+  const steps = [
+    () => clipAll(1500), () => drop('bookkeeping'), () => clipAll(300), () => drop('doc-copy'), () => drop('follow-up'),
+    () => { c.findings.defect = c.findings.defect.slice(0, 40); c.findings['test-gap'] = c.findings['test-gap'].slice(0, 40); c.follow_ups = c.follow_ups.slice(0, 20) },
+    () => clipAll(120),
+  ]
+  for (const step of steps) { if (size() <= RETURN_CAP) break; step(); c.clipped = true }
+  c.return_chars = size()
+  c.return_chars = size() // again, now counting the field itself
+  return c
+}
+
+function finish(r) {
+  return capReturn(compact(r))
+}
+
 // ---------- pipeline ----------
 
 const result = { issue: ISSUE, size: SIZE, status: 'running', diagnoses: [], spec: null, plan: null, symptom_check: null, tasks: [], gates: null, docs: null, summary: null }
@@ -400,24 +505,24 @@ const angles = SIZE === 'small'
   : ['what the failing component or function actually receives (inputs, props, payloads, state)', 'where the working path and the failing path diverge']
 result.diagnoses = (await parallel(angles.map((a, i) => () =>
   agent(diagPrompt(a), opts('diagnose', { label: `diagnose ${i + 1}`, phase: 'Diagnose', schema: DIAG }))))).filter(Boolean)
-if (!result.diagnoses.length) return Object.assign(result, { status: 'failed', stage: 'diagnose', reason: 'all diagnosers died' })
+if (!result.diagnoses.length) return finish(Object.assign(result, { status: 'failed', stage: 'diagnose', reason: 'all diagnosers died' }))
 const decision = result.diagnoses.find((d) => d.decision_required)
-if (decision) return Object.assign(result, { status: 'decision_required', decision_required: decision.decision_required }) // [SP-11]
+if (decision) return finish(Object.assign(result, { status: 'decision_required', decision_required: decision.decision_required })) // [SP-11]
 
 phase('Spec')
 result.spec = await agent(specPrompt(result.diagnoses), opts('spec', { label: 'spec', schema: SPEC }))
-if (!result.spec) return Object.assign(result, { status: 'failed', stage: 'spec', reason: 'agent died' })
-if (result.spec.decision_required) return Object.assign(result, { status: 'decision_required', decision_required: result.spec.decision_required })
+if (!result.spec) return finish(Object.assign(result, { status: 'failed', stage: 'spec', reason: 'agent died' }))
+if (result.spec.decision_required) return finish(Object.assign(result, { status: 'decision_required', decision_required: result.spec.decision_required }))
 if (!result.spec.mechanism_explains_reported_data) log('Spec: no diagnosed mechanism fully explains the reported data. Proceeding with a fix that is correct regardless, plus evidence capture [SP-3].')
 
 phase('Plan')
 result.plan = await agent(planPrompt(result.spec), opts('plan', { label: 'plan', schema: PLAN }))
-if (!result.plan || !(result.plan.tasks || []).length) return Object.assign(result, { status: 'failed', stage: 'plan', reason: result.plan ? 'plan returned no tasks' : 'agent died' })
+if (!result.plan || !(result.plan.tasks || []).length) return finish(Object.assign(result, { status: 'failed', stage: 'plan', reason: result.plan ? 'plan returned no tasks' : 'agent died' }))
 const tasks = result.plan.tasks
 if (tasks.length > 10) log(`Plan has ${tasks.length} tasks (cap is about 9). Consider slicing into sub-issues [PL-7].`)
 result.symptom_check = await agent(fitPrompt(result.spec, result.plan), opts('verify', { label: 'symptom check', phase: 'Plan', schema: FIT }))
 if (result.symptom_check && result.symptom_check.verdict !== 'reported') {
-  return Object.assign(result, { status: 'plan_mismatch', reason: `symptom check: ${result.symptom_check.verdict}. ${result.symptom_check.reason}` }) // back to diagnosis
+  return finish(Object.assign(result, { status: 'plan_mismatch', reason: `symptom check: ${result.symptom_check.verdict}. ${result.symptom_check.reason}` })) // back to diagnosis
 }
 
 phase('Build')
@@ -488,11 +593,12 @@ Root cause: … Confirmed by: …
 Ranking: … ; overruled by evidence: …
 What changes for the user: …
 Gates: …
+Findings (defects and test gaps first, then doc/copy; follow-ups as issues to file): …
 Commits (git log ${A.base || 'origin/main'}..HEAD, run it):
 Check by hand: …
 Open: …
 Next: your yes to merge; then a separate yes to push.
-Data: ${JSON.stringify({ issue: ISSUE, status: result.status, spec: result.spec, symptom_check: result.symptom_check, tasks: result.tasks.map((t) => t && { id: t.id, status: t.status, reason: t.reason, repairs: t.repairs }), gates: result.gates, docs: result.docs, metrics: result.metrics })}
+Data: ${JSON.stringify(finish(result))}
 ${PREAMBLE}`, opts('docs', { label: 'summary' }))
 
-return result
+return finish(result) // compact and capped [OR-26]

@@ -15,12 +15,13 @@ Where the harness supports it, run each subagent in the background, so the conve
    - Ready = remaining tasks whose `depends_on` are all done, or are ids not in the plan. If none are ready, take the first remaining task alone [OR-8].
    - From the ready tasks, take a wave whose `files` are pairwise disjoint, up to `max_parallel_builders` [PL-4, SZ-2]. A task whose dependency failed is `blocked`, so do not build it.
    - Launch the wave's builders in ONE message (parallel).
-6. **Verify each task** as soon as its builder returns, with a FRESH agent (never the builder's context) running the verifier prompt [VF-1]. A missing or garbled verdict means re-verify, never pass [OR-9].
+6. **Verify each task** as soon as its builder returns, with a FRESH agent (never the builder's context) running the verifier prompt [VF-1]. A missing or garbled verdict means re-verify, never pass [OR-9]. The negative control runs in a throwaway worktree with a real dependency install, never symlinked dependencies [IS-16]. Each builder commits its plan ticks with its task, and verifiers ignore uncommitted ticks [BD-21].
+   - Append every verdict's `non_blocking_findings` (each tagged defect, test-gap, doc-copy, follow-up or bookkeeping) to `findings` in `run-state.json`. Dedupe on normalised text and keep the most severe tag [VF-31].
 7. **Repair.** On rejection, launch a repair agent one tier up from build, with `unfinished_work` verbatim. Then re-verify. Do at most 3 rounds, then mark the task failed [VF-5].
 8. **Completeness.** Run 1 agent to cross-check the plan's units against the tree, and run a completion build for exactly the missing units [VF-13, OR-10].
-9. **Gates.** Run 1 agent with the gates prompt [TG-6]. Then re-run the gate commands yourself before you believe the result [VF-10].
+9. **Gates.** Run 1 agent with the gates prompt [TG-6]. Then re-run the gate commands yourself before you believe the result [VF-10]. Do not run the profile's `ci_only` checks [TG-34].
 10. **Docs.** Run 1 agent. If it updated docs, run 1 verifier on the doc claims [VF-6].
-11. **Audit and summary.** Do SKILL.md Step 4, then Step 5. Stop.
+11. **Audit and summary.** Do SKILL.md Step 4, then Step 5. Work from the merged findings list, defects and test gaps first, and keep the subagents' long outputs in files you reference by path rather than pasting them into the summary [OR-26]. Stop.
 
 ## Without any subagents
 

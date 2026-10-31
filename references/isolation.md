@@ -29,6 +29,7 @@ for p in <profile.env.link>; do ln -s "<main_checkout>/$p" "$p"; done
 - **Build in a dedicated worktree on its own branch, outside the main checkout** [IS-1]. Every shell command starts with `cd "<worktree>"`, every agent uses its absolute path, and other active worktrees are named as off-limits in the preamble [OR-13]. One 78-minute run broke when a concurrent terminal moved the main checkout's HEAD underneath it.
 - **Prepare the worktree fully** [IS-2]. Install dependencies, run any codegen or sync step, link the real gitignored secrets, and source the main checkout's env file. Never create dummy secrets. A dummy secrets folder once failed 22 specs, and the exit-127 "command not found" errors came from a skipped install.
 - **Never copy secrets.** Link them, and read them from the file straight into the command's environment [PS-16].
+- **Throwaway worktrees (negative controls, bisects) install their own dependencies** with a real frozen-lockfile install. Never symlink dependency directories from another checkout. Link only the env and secrets [IS-16]. Symlinked dependencies resolve modules from the other checkout and break module mocks, so the control fails for the wrong reason.
 
 ## 2. Ports and servers
 

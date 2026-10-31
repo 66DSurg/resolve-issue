@@ -29,7 +29,7 @@ Steps:
   ```
 - [ ] Run `<cmd>` and see it pass
 - [ ] Run typecheck and lint: `<cmd>`
-- [ ] Commit, staging explicit paths only: `git add <paths> && git commit -m "<subject> (#<n>)" -m "<trailers>"`
+- [ ] Tick these boxes, then commit, staging explicit paths only and including this plan file: `git add <paths> <plan path> && git commit -m "<subject> (#<n>)" -m "<trailers>"`
 
 Acceptance: <observable outcome the verifier checks, including the negative control>
 

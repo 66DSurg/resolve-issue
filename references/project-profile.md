@@ -9,7 +9,7 @@ A full annotated example is in `templates/profile.example.yml`.
 When the profile is missing, discover it before the first issue. Do this inline. It takes a few minutes, and it saves every later run from guessing.
 
 1. **Identify the repo.** Run `git remote -v`, `git rev-parse --show-toplevel` and `git symbolic-ref refs/remotes/origin/HEAD`. If the repo is nested inside another repo, record that, and never inherit the parent's settings [PF-2].
-2. **Find the commands.** Read the existing agent-context files (`CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`), `package.json` scripts, `Makefile`, `justfile`, `pyproject.toml`, `Cargo.toml`, the CI workflow files and `scripts/`. The CI files are the most trustworthy source, because they are what actually gates. Record install, typecheck, lint, unit, e2e, build and doc checks, per package for monorepos.
+2. **Find the commands.** Read the existing agent-context files (`CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`), `package.json` scripts, `Makefile`, `justfile`, `pyproject.toml`, `Cargo.toml`, the CI workflow files and `scripts/`. The CI files are the most trustworthy source, because they are what actually gates. Record install, typecheck, lint, unit, e2e, build and doc checks, per package for monorepos. Exclude checks that only run in a PR or CI context, such as a docs check that reads the PR's description or changed-file list. Record them as `ci_only`, never in the gate list [TG-34].
 3. **Prove each command.** Run each one once (except e2e if it needs shared resources), and record its runtime and its current failing set. That failing set becomes `known_flaky` only after the human confirms it [TG-8]. A command that does not run is recorded as `broken: <first error line>`, never silently dropped.
 4. **Find the ports.** Find the developer's default dev ports (framework configs, `.env*.example`, proxy configs). They go in `ports.reserved`. Pick a spare range for agents [IS-3].
 5. **Find the env and secrets.** Find the gitignored files and directories a fresh worktree needs (`.env`, `secrets/`, local certs). They go in `env.link`, to be linked and never copied [IS-2].
@@ -41,6 +41,7 @@ commands:                        # each proven to run; per-package keys allowed
   e2e_isolated: <cmd or null>    # takes spare ports; see references/isolation.md
   build: <cmd>
   docs_checks: [<cmd>, ...]
+ci_only: [<cmd>, ...]            # needs a PR/CI context; never a local gate [TG-34]
 known_flaky: [<spec id>, ...]    # the SET; a new failure outside it blocks
 ports:
   reserved: [<dev ports agents must never use>]

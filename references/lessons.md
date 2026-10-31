@@ -150,6 +150,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 23. **Keep ranking and closing deterministic: sort by the labels the AI applied, break ties oldest first, and upsert one sticky comment found by an HTML marker. Confine AI to one classification step.** — Deterministic jobs are testable, cheap and cannot hallucinate. (The queue job has no AI in it.)
 24. **When re-classifying, clear the earlier mutually exclusive labels first.** — Otherwise values accumulate instead of being replaced. (An issue ended up with two priority labels.)
 25. **Map a portable skill's canonical role names to the repo's real label strings in one table that the skill reads.** — Hardcoded labels break in each new repo. (The skill's "needs-triage" is this repo's "triage-pending".)
+26. **Return a COMPACT result from a run: status, root cause, a gates table, the commit list, the merged findings by severity and the follow-up issues to file. Keep large per-stage outputs in the run journal and the spec and plan files, referenced by path, and cap the returned text (about 20 KB).** — A return value nobody can read is no return value. (In the first dogfood run the return was about 240 KB, and the orchestrator had to dig through the journal instead.)
 
 ## 7. Build (BD)
 
@@ -173,6 +174,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 18. **If you disable an up-front validation (such as create-time body checks), require a test that exercises each new item.** — The failure moves to first use. (With function body checks off during apply, a typo fails only when the function is first called.)
 19. **When several configs must agree (proxy routes, dev proxy, edge config), keep ONE list, generate the rest from it, and guard new entries the moment they exist.** — Hand-synced lists drift. (One API route was missing from staging's allowlist for three months.)
 20. **Put each business rule (such as "what counts") in one place, a view or a function, with a static guard that fails when a query restates it.** — Inline recomputations drift from the canonical rule. (Several queries recomputed the counting rule inline and drifted from it.)
+21. **A builder commits its plan checkbox ticks in the same commit as its task (or the plan does not use checkboxes). Verifiers ignore uncommitted plan ticks.** — Uncommitted ticks dirty the tree and show up in every verifier report as noise. (In the first dogfood run builders ticked boxes without committing them, and every verifier flagged it.)
 
 ## 8. Verify (VF)
 
@@ -185,8 +187,8 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 7. **UI acceptance drives the real page: seed the user's data shape, click the real control, assert the rendered DOM. Every UI state must render something visible. Nothing is fixed until the reporter confirms it in production.** — Logic tests do not cover what the page shows. (Two dedup fixes had green gates, yet production showed a blank section after the button was clicked.)
 8. **Use the reporter's REAL data shape (anonymised) as the acceptance test and reason explicitly about those rows.** — A fix that passes tests but fails on the reported rows has failed. (Idealised fixtures hid the very bug that was reported.)
 9. **When test doubles (virtual authenticators, mocked SDKs) cannot reproduce a real-device or real-vendor bug, say the fix is pending real-device verification.** — Do not declare it done. (A passkey fix could be confirmed only on the operator's phone.)
-10. **Re-run the gates yourself after a workflow reports green, and check the tree. Never trust subagent claims.** — Subagents misreport. (A re-run found nine broken test files, and a ship agent reported "zero commits" that actually existed.)
-11. **Re-read every finding a verifier labels "non-blocking".** — Several are real defects. (A 500 where a 400 belonged, an empty input reaching a payment provider as an opaque 502, and a silent fail-open were all filed as non-blocking.)
+10. **Re-run the gates yourself, independently of the run, after a workflow reports green, and check the tree. Never trust subagent claims.** — Subagents misreport. (A re-run found nine broken test files, and a ship agent reported "zero commits" that actually existed. In the first dogfood run the independent re-run matched, which is what made the green believable.)
+11. **Re-read and re-triage every finding a verifier labels "non-blocking", by severity, starting with defects and test gaps. "Non-blocking" is the verifier's opinion, not a verdict.** — Several are real defects. (A 500 where a 400 belonged, an empty input reaching a payment provider as an opaque 502, and a silent fail-open were all filed as non-blocking. In the first dogfood run the re-read found 4 real defects.)
 12. **Verify a gate in both directions: it does not leak onto routes it should not cover, AND it covers every route it should.** — Most checks only test one direction. (A paywall check proved there was no leak but missed an ungated import endpoint.)
 13. **Before release, cross-check the plan's unit list against the tree. A planned unit with no implementation is a STOP.** — Half-features otherwise ship. (A hardcoded unit list dropped units the plan defined.)
 14. **Hold up as the standard a release agent that refuses to ship docs describing behaviour that cannot fire, even when the gates are green.** — Green gates can still hide dead features. (A validator stripped the field a feature needed, and the release agent blocked it.)
@@ -206,6 +208,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 28. **Have a domain expert validate domain content.** — The builder is not the validator outside their own field. (A procedure list for another specialty was structurally fine but needed review from that field.)
 29. **Remember that long-lived cache headers also apply to 404 fallbacks. Verify assets at the origin first, and avoid immutable caching on paths that may be requested before they exist.** — An early probe can cache "not found" for a year. (A brand asset URL served a cached 404 long after the file went live.)
 30. **Remember that "tests passed" is not "deploy works": keep build, migrate and health-check failures aborting on the host even after a CI gate exists.** — Environment-level failures need their own checks. (A green stamp covers only the tested code.)
+31. **Merge and dedupe every verifier's findings into ONE list, and make verifiers tag each finding with a severity: defect, test-gap, doc-copy, follow-up or bookkeeping. The summary lists defects and test gaps first, and the post-run re-read works from this list.** — Scattered per-verifier lists bury real defects under repeated bookkeeping. (In the first dogfood run about ten verifiers each returned their own list with heavy duplication, and a page stuck on Loading, misleading copy and a raw 500 hid among notes about checkboxes.)
 
 ## 9. Tests and gates (TG)
 
@@ -242,6 +245,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 31. **Lint deploy and shell scripts in CI (e.g. shellcheck).** — They are load-bearing and otherwise untested. (Deploy script bugs had reached hosts.)
 32. **A gates stage that can commit fixes needs at least medium effort and a model that follows instructions reliably.** — It reads output and commits, so a careless model can damage the branch. (Gates looked mechanical but turned out to be risky.)
 33. **If a concurrent session deploys without tests, treat staging and production as suspect and run the whole suite once things settle.** — State you did not create is untrusted. (A parallel terminal pushed fixes and a version bump straight to production, untested.)
+34. **Profile discovery excludes checks that only run in a PR or CI context (they read PR metadata or CI-only variables). Record them as `ci_only` in the profile, never in the gate list.** — Run locally they fail every time, so a gate list that includes them is red for a reason unrelated to the change. (In the first dogfood run a PR-only docs check failed outside a PR, and the post-run audit caught it.)
 
 ## 10. Isolation and environment (IS)
 
@@ -260,6 +264,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 13. **Keep large media and content production out of the product repo.** — Clones, CI, worktrees and agents stay fast. (4 GB of video moved to its own private repo.)
 14. **Pin the CI runtime version to exactly what the hosts run, and bump the two together.** — Version skew makes a green CI meaningless. (CI and hosts drifted apart.)
 15. **Make sure the test environment has the real capabilities the feature needs: codecs, fonts, hardware APIs.** — Bundled test browsers may lack them. (The bundled Linux browser had no H.264 encoder.)
+16. **Throwaway worktrees (negative controls, bisects) do a real dependency install, such as a frozen-lockfile install. Never symlink dependencies from another checkout; link only the secrets and env.** — A symlinked dependency tree resolves modules from the other checkout, so module mocks break and the control fails for the wrong reason. (In the first dogfood run negative controls failed spuriously because the throwaway worktree's dependencies were symlinked from another checkout.)
 
 ## 11. Deploy and infrastructure (DP)
 

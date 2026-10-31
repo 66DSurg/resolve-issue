@@ -20,9 +20,9 @@ Implementers' self-reports are optimistic, so every task gets a fresh adversaria
 
 Put this in every build prompt:
 
-> Execute the plan's task exactly. Tick its checkboxes, run its tests and commit only your own files, by explicit path. If the plan's code does not compile against reality, fix it to match and REPORT the deviation. Report the commands you ran and their real output. Only do the task you are given: do not invent additional work [BD-1, BD-2].
+> Execute the plan's task exactly. Run its tests, tick its checkboxes, and commit the ticked plan file together with your own files, by explicit path, in the task commit. If the plan's code does not compile against reality, fix it to match and REPORT the deviation. Report the commands you ran and their real output. Only do the task you are given: do not invent additional work [BD-1, BD-2].
 
-The middle rule is the one that worked. Builders that redesigned freely broke parallel slices, and builders that applied broken code blindly broke the build.
+Ticks left uncommitted dirty the tree and turn up as noise in every verifier report, so they go in the task commit, or the plan drops checkboxes [BD-21]. The middle rule is the one that worked. Builders that redesigned freely broke parallel slices, and builders that applied broken code blindly broke the build.
 
 - **Zero new dependencies by default.** If one seems necessary, stop and note it. When it is allowed, pin the exact version and install it in the worktree [BD-15].
 - **Pin validated external model ids** in code and in every environment, list the known-bad ids, and keep a real-API check [BD-13].
@@ -63,7 +63,7 @@ Checklist. Each item exists because a verifier once missed that class of defect 
 3. Typecheck and lint are clean.
 4. A commit exists with the required trailers and issue tag [GR-4].
 5. The diff contains no `TODO`, `FIXME` or "not implemented".
-6. The plan's checkboxes are ticked.
+6. The plan's checkboxes are ticked in a commit. Uncommitted ticks in the working tree belong to another live task: ignore them, they are not a finding [BD-21].
 7. The law checks pass, by grep [VF-25]. Examples: forbidden user-facing vocabulary, destructive DDL (`drop`, `truncate`, `delete` in auto-run migrations [DI-25]), new unique constraints, secrets in output, raw colours instead of tokens, sensitive identifiers in fixtures, commits and docs [PS-1].
 8. **The negative control** (section 4).
 9. **The reported symptom is resolved.** Reason explicitly about the reporter's actual (anonymised) rows [VF-8].
@@ -75,6 +75,8 @@ Checklist. Each item exists because a verifier once missed that class of defect 
 ## 4. Negative controls
 
 **Prove the regression test can fail** [VF-3]. Stash or revert the fix, or plant a bad input, and watch the test go red. Then restore. A test that passes on the old code and the new code alike proves nothing.
+
+- In a shared worktree, do it in a throwaway detached worktree, never by stashing where other tasks are live. That throwaway worktree gets a **real dependency install** (a frozen-lockfile install), never dependency directories symlinked from another checkout. Link only the env and secrets [IS-16]. Symlinked dependencies resolve modules from the other checkout, module mocks break, and the control goes red for the wrong reason.
 
 - Assertions must fail on the bad outcome, not merely "not throw".
 - The component under test must not be mocked.
@@ -89,9 +91,12 @@ Checklist. Each item exists because a verifier once missed that class of defect 
   "checks": [{"check": "negative control", "ok": false, "detail": "test still green with fix reverted"}],
   "unfinished_work": "precise, naming files and symbols",
   "code_defect": true,
+  "non_blocking_findings": [{"severity": "defect", "finding": "settings page stays on Loading when the list is empty (settings/+page.svelte:42)"}],
   "summary": "one line"
 }
 ```
+
+Every non-blocking finding carries a severity: `defect` (wrong behaviour a user could hit), `test-gap`, `doc-copy` (wrong or misleading text), `follow-up` (real but out of scope) or `bookkeeping`. The run merges all verifiers' findings into one deduped list, keeping the most severe tag on a duplicate, and the summary lists defects and test gaps first [VF-31].
 
 `code_defect` is true only for real logic defects, not bookkeeping such as a missing trailer or an unticked box. Keeping the two apart keeps the repair-rate metric honest [VF-4, CO-2].
 
@@ -102,9 +107,9 @@ Checklist. Each item exists because a verifier once missed that class of defect 
 - A null verdict (the verifier died) means re-verify, never pass [OR-9].
 - After the third failure, report the task as failed, with the evidence.
 
-**Re-read "non-blocking" findings.** Several turn out to be real: a 500 where a 400 belonged, an empty input reaching a payment provider as an opaque 502, a silent fail-open [VF-11].
+**Re-triage "non-blocking" findings by severity**, from the merged list, defects and test gaps first. Several turn out to be real: a 500 where a 400 belonged, an empty input reaching a payment provider as an opaque 502, a silent fail-open, a page stuck on Loading [VF-11, VF-31].
 
-**Never trust a subagent's claims.** Re-run the gates yourself after a run reports green, and check the tree [VF-10]. One re-run found nine broken test files, and a ship agent once reported "zero commits" that actually existed.
+**Never trust a subagent's claims.** Re-run the gates yourself, independently, after a run reports green, and check the tree [VF-10]. One re-run found nine broken test files, and a ship agent once reported "zero commits" that actually existed.
 
 **Cross-check the plan against the tree before handoff.** A planned unit with no implementation is a STOP [VF-13].
 

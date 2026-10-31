@@ -22,6 +22,7 @@ The gates stage runs the project's full gate list from the profile until it is g
 - **When the test runner is unavailable**, fall back to typecheck, build and a static diff review. Rely on CI for the definitive run, and say plainly that this is what you did [TG-12].
 - **Run DB-touching tests against a real database** before calling them done [TG-15]. Mocks pass while the real DB rejects the operation through row-level security or constraints.
 - **If CI checks run only on pull requests** and you commit straight to the main line, run those checks locally in every gate pass [TG-22].
+- **A check that needs a PR or CI context to run at all** (it reads PR metadata or CI-only variables) is not a local gate. It goes in the profile's `ci_only` list, the gates stage reports it as ci_only, and a local failure of it never makes the run red [TG-34].
 - **Stub paid external calls** in tests by default and assert zero billed calls [CO-4].
 - **Do not run a suite while another agent rebuilds the same frontend**, because it causes spurious failures [IS-12].
 
