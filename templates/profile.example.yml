@@ -1,106 +1,106 @@
 # .claude/resolve-issue.yml: an example profile for a hypothetical TypeScript
-# monorepo with a Bun backend and a SvelteKit frontend. Copy it, then let
-# first-run discovery (references/project-profile.md) correct every value.
+# monorepo with a Bun backend and a SvelteKit frontend. It lists OVERRIDES only:
+# every key left out takes its default from references/project-profile.md.
+# First-run discovery writes a file like this one and you correct it.
 version: 1
-project: acme-notes
-repo:
-  remote: acme/notes
-  main_branch: main
-  nested_in_parent: false
+agent_docs: docs/agents/         # tracker, labels and domain layout are read from here
 
 commands:
   install: bun install
-  codegen: cd frontend && bunx svelte-kit sync
   typecheck: cd server && bun run typecheck && cd ../frontend && bun run check
   lint: cd server && bun run lint
   unit: cd server && bun test && cd ../frontend && bun run test
-  e2e: bun run e2e
   e2e_isolated: scripts/e2e-isolated.sh --backend-port {backend} --frontend-port {frontend}
   build: cd frontend && bun run build
-  docs_checks:
-    - bun scripts/docs/check_links.js
-    - bun scripts/docs/check_version_consistency.js
-
-# Checks that need a PR or CI context (PR metadata, CI-only variables). They are
-# never local gates, and the gates stage reports them as ci_only.
-ci_only:
-  - bun scripts/docs/check_pr_docs_impact.js
-
-# The SET of specs known to flake. Only a failure inside this set is non-blocking.
-known_flaky:
-  - tests/e2e/upload-large.spec.ts
-  - tests/e2e/offline-sync.spec.ts
-
-ports:
-  reserved: [5173, 8000]       # the developer's own dev servers. Never touch.
-  agent_range: [5300, 5399]
-
-env:
-  link: [.env, secrets]        # symlinked from the main checkout, never copied
-  source: .env.test
-
-worktrees_dir: ../notes-worktrees
-branch_prefix: fix/
-spec_dir: docs/issues          # → docs/issues/2026-10-31-search-blank/spec.md
-
-docs:
-  changelog: CHANGELOG.md
-  unreleased_heading: "## Unreleased"
-  version_file: VERSION
-  user_docs: [docs/user]
-  dev_docs: [docs/developer]
-  adr_dir: docs/adr
-  glossary: CONTEXT.md
-  index: docs/README.md
-
-issues:
-  tracker: github
-  close_trailer: "Ships: #{n}"   # main deploys to staging, so do not close on merge
-
-labels:
-  needs-triage: triage-pending
-  ready: ready
-  in-progress: in-progress
-  blocked: blocked
-  keep-open: keep-open
-
+ci_only: [bun scripts/docs/check_pr_docs_impact.js]
+known_flaky: [tests/e2e/upload-large.spec.ts]
+ports: {reserved: [5173, 8000], agent_range: [5300, 5399]}
+env: {link: [.env, secrets], source: .env.test}
+issues: {close_trailer: "Ships: #{n}"}   # main deploys to staging, so do not close on merge
 git:
-  subject: "<summary> (#{n})"
-  trailers:
-    - "Co-Authored-By: Claude <noreply@anthropic.com>"
-  never_stage:
-    - scratch/
-
-tiers:
-  diagnose: {model: opus, effort: high}
-  spec: {model: null, effort: high}
-  plan: {model: null, effort: high}
-  build: {model: sonnet, effort: medium}
-  verify: {model: null, effort: high}
-  repair: {model: null, effort: high}
-  gates: {model: sonnet, effort: medium}
-  docs: {model: sonnet, effort: medium}
-  _excluded: [haiku]             # failed the "reply with exactly: ok" probe
-  _baseline: "5 repairs / 22 build tasks before tiering"
-
-budget:
-  max_concurrent_runs: 3
-  max_parallel_builders: 4
-  e2e_in_worktree: false
-
-ranker:
-  cmd: null                      # e.g. "bun scripts/rank.ts" reading JSON on stdin
-
+  trailers: ["Co-Authored-By: Claude <noreply@anthropic.com>"]
+packs: [ux]
 laws:
   - "Migrations that auto-run on production are additive only: no DROP, TRUNCATE or DELETE."
-  - "No raw colour values outside the design tokens file."
-  - "User-facing copy never says 'LLM'."
   - "UI controls come from frontend/src/components/ui; never re-implement one on a page."
+human: {tests_on: staging}
 
-privacy:
-  identifier_patterns:
-    - '\b[A-Z]{2}\d{6}\b'        # this domain's account-number shape
-
-human:
-  tests_on: staging
-  remote_access: <your tunnel command> --port {frontend}
+# ---------------------------------------------------------------------------
+# Full key reference. Uncomment a key only when its value differs from the
+# default in references/project-profile.md.
+#
+# project: <name>
+# repo:
+#   remote: <owner/repo>          # verified with git remote -v
+#   main_branch: main             # default: git symbolic-ref refs/remotes/origin/HEAD
+#   nested_in_parent: false       # never inherit a parent repo's settings [PF-2]
+# agent_docs: <dir or null>       # docs/agents/ if present; read, never copied
+# commands:                       # each proven to run; per-package keys allowed
+#   install: <cmd>
+#   codegen: <cmd or null>
+#   typecheck: <cmd>
+#   lint: <cmd>
+#   unit: <cmd>
+#   e2e: <cmd>
+#   e2e_isolated: <cmd or null>   # takes spare ports; see references/isolation.md
+#   build: <cmd>
+#   docs_checks: [<cmd>, ...]
+# ci_only: [<cmd>, ...]           # needs a PR/CI context; never a local gate [TG-34]
+# known_flaky: [<spec id>, ...]   # the SET; a new failure outside it blocks
+# ports:
+#   reserved: [<dev ports agents must never use>]
+#   agent_range: [<from>, <to>]
+# env:
+#   link: [<gitignored paths to symlink into each worktree>]
+#   source: <env file the tests need, or null>
+# worktrees_dir: ../<repo>-worktrees
+# branch_prefix: fix/
+# spec_dir: docs/issues           # 'none' → a scratch directory
+# small_spec_file: false          # true: small issues also get a spec file
+# packs: []                       # ux, product, data-import, cost, tool-quirks
+# docs:
+#   changelog: CHANGELOG.md
+#   unreleased_heading: "## Unreleased"
+#   version_file: VERSION
+#   user_docs: [<paths>]
+#   dev_docs: [<paths>]
+#   adr_dir: <path or null>
+#   glossary: <path or null>
+#   index: <path that must link new specs/ADRs>
+# issues:
+#   tracker: github
+#   close_trailer: "Closes #{n}"  # or "Ships: #{n}" when the main line is not production
+# labels:                         # role → this repo's label string, only where they differ
+#   needs-triage: needs-triage
+#   needs-info: needs-info
+#   ready-for-agent: ready-for-agent
+#   ready-for-human: ready-for-human
+#   wontfix: wontfix
+#   in-progress: in-progress
+#   keep-open: keep-open
+# git:
+#   subject: "<summary> (#{n})"
+#   trailers: ["Co-Authored-By: <agent identity>"]
+#   never_stage: [<known stray untracked paths>]
+# tiers:                          # see references/cost.md
+#   diagnose: {model: <strongest>, effort: high}
+#   spec: {model: null, effort: high}
+#   plan: {model: null, effort: high}
+#   build: {model: <mid>, effort: medium}
+#   verify: {model: null, effort: high}
+#   repair: {model: null, effort: high}   # one tier above build
+#   gates: {model: <mid>, effort: medium}
+#   docs: {model: <mid>, effort: medium}
+#   _excluded: [<tiers that failed the obey probe>]
+# budget:
+#   max_concurrent_runs: 3
+#   max_parallel_builders: 4
+#   e2e_in_worktree: false        # true only if it needs no shared resources
+# ranker:
+#   cmd: <command reading JSON on stdin, or null for an explicit in-prompt ranking>
+# laws: ["<project NON-NEGOTIABLE, numbered for verifiers>"]
+# privacy:
+#   identifier_patterns: ['<regex for this domain's identifiers>']
+# human:
+#   tests_on: staging             # where the human dogfoods [CM-4]
+#   remote_access: <tunnel cmd or null>  # [CM-5]
