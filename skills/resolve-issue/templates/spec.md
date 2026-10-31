@@ -44,7 +44,18 @@ Only when a shared component's default or behaviour changes. Walk each caller's 
 | Caller | Flow before | Flow after | Intended? (yes / no / unsure) |
 |---|---|---|---|
 
+## Privacy and security behaviour
+
+`privacy_security_change: <true | false>`. True when the change alters what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs). It is always the human's decision, never a ranking's: the run stops here until each row cites a human answer passed in as `decisions` [SP-18].
+
+| Surface | Before | After | Human decision (decisions index) |
+|---|---|---|---|
+
 ## What changes for the user
+
+`user_visible: <true | false>`. True turns on the VIEW lens: before/after screenshots at 390×844 and 1440×900.
+View targets (screen / state, e.g. "settings / empty", "record page / locked"): <…>
+
 
 <one or two plain sentences; the run's summary quotes this line>
 

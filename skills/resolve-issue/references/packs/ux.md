@@ -2,6 +2,8 @@
 
 **Switch on when** the issue changes what users see or do: screens, controls, copy, flows, notifications, emails or charts. Turn it on with `packs: [ux]` in the profile, or let a diagnosis that meets this trigger turn it on for one run.
 
+The VIEW lens (`references/verification.md` §6) judges its screenshots against this pack and the profile's `docs.design`.
+
 These rules are one product's taste, generalised. They are a sound default, not a law: where the project's own design system, ADRs or glossary say otherwise, those win.
 
 ## Rules

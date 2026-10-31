@@ -17,6 +17,7 @@ Privacy is a law in this skill, not a preference. It is injected into every agen
 
 - **Never write sensitive identifiers** (names, record numbers, birth dates, customer PII) into issues, commits, PRs, docs or fixtures, even in a private repo [PS-1]. Refer to records by an opaque id prefix, a date and a type ("record `632d…`, 2026-09-12, import"). Keep screenshots local. The verifier greps for this.
 - **Treat the issue tracker as an external processor.** Scan the text for identifiers before you create an issue or comment [PS-2]. Bots and integrations forward issue bodies to vendors.
+- **Side-issue drafts are scrubbed before filing.** The run applies `privacy.identifier_patterns`, every body claims only what its evidence shows, and no screenshot of real user data is attached; VIEW shots use test data only [OR-27, PS-2].
 - **Scrubbing the current files does not scrub git history.** Plan a history rewrite before a repo goes public, and add a guard so nothing new gets in [PS-3].
 - **Guard retired tokens by hash.** A test hashes every word of every tracked text file and compares the result against stored hashes, so the deny-list does not itself re-leak the tokens. Fixture names are obviously synthetic [PS-4].
 
@@ -50,6 +51,7 @@ Privacy is a law in this skill, not a preference. It is injected into every agen
 - **Hide admin routes from non-admins with 404, not 403**, on both frontend and backend [PS-15].
 - **Mark API responses that carry private data `no-store, private`**, and pin the fix with a regression test that covers error responses too [PS-21].
 - **When a page and its data share one URL, distinguished by headers**, set `Vary` and no-cache on the app pages [PS-22].
+- **A change to what is on screen or in the DOM when the app is locked or logged out, or to how long data lives, is the human's decision** [SP-18]. The spec flags it per surface and the run stops at spec. The verifier checks the diff for one the spec missed. Never let a ranker decide it, however confident.
 - **Fail closed on capability signals.** While a status is pending or errored, treat an optional feature as unavailable. Status endpoints return only a boolean, never key material or its length [PS-25].
 - **In a triage rubric for a sensitive-data app, round anything touching data integrity or confidentiality UP to top priority**, and round pure polish down [PS-23].
 

@@ -28,17 +28,22 @@
 //   maxParallel:  4,
 //   stopAfter:    null | 'diagnose' | 'plan',    // opt-in human checkpoint; null (default) runs to the end [SP-1]
 //   resumeFrom:   null | 'build',                // 'build' reads the committed plan at planPath and builds it
+//   scratchDir:   '/abs/scratch',                // OUTSIDE the worktree: logs → <scratchDir>/<issue>/logs, screenshots → .../screenshots [IS-19]
+//   openIssues:   [{ number: 12, title: '...', labels: ['bug'] }],  // fetched by the main loop with the tracker CLI; the harvest dedupes against it [OR-27]
+//   decisions:    [],                            // the human's answers to an earlier decision_required, verbatim; spec rows cite them by index [SP-18]
 // }
 // Returns a COMPACT result for the post-run audit [OR-18, OR-26]: status, root cause, a gates table,
 // the commit list, merged and deduped findings by severity [VF-31], follow-ups to file, per-stage
 // metrics, paths, and a summary rendered from that data (no summary agent). Capped at RETURN_CAP
 // characters; full per-stage outputs stay in the run journal and in the spec and plan files.
+// When the spec says user_visible, a VIEW agent screenshots before/after and judges them (it builds nothing).
+// A final HARVEST stage turns side findings into issue drafts (side_issues, bundle_issue); the main loop files them.
 // Wall-clock time is not available here: the main loop records start and end in the run log.
 // The run ends at a verified branch. It never pushes, tags or releases [HG-1].
 
 export const meta = {
   name: 'resolve-issue-__ISSUE__',
-  description: 'Issue __ISSUE__: diagnose → spec → plan → parallel build → per-task adversarial verify/repair → gates (+ verify gates commits) → docs if affected. Stops at a verified branch.',
+  description: 'Issue __ISSUE__: diagnose → spec → plan → parallel build → per-task adversarial verify/repair → gates (+ verify gates commits) → docs if affected → side-issue harvest. VIEW lens when user-visible. Stops at a verified branch.',
   whenToUse: 'One tracker issue, after pre-flight, sizing and worktree setup are done in the main loop.',
   phases: [
     { title: 'Diagnose', detail: 'rank candidate causes, probe, confirm. No fixes' },
@@ -46,8 +51,10 @@ export const meta = {
     { title: 'Plan', detail: 'real code, structured units, symptom check when the repro was not measured' },
     { title: 'Build', detail: 'one builder per task, waves over the dependency graph' },
     { title: 'Verify', detail: 'fresh adversarial verifier per task, repair one tier up, max 3 rounds' },
+    { title: 'View', detail: 'only when the spec says user_visible: before/after screenshots judged against the design docs; branch defects get 1 repair' },
     { title: 'Gates', detail: 'fixed gate list, whole-log failure grep, known-flaky set; a fresh verifier over any gates commits' },
     { title: 'Docs', detail: 'only when the spec says docs are affected; changelog under Unreleased, claim check' },
+    { title: 'Harvest', detail: 'side findings from every stage → deduped issue drafts for the main loop to file' },
   ],
 }
 
@@ -69,6 +76,14 @@ const SEVERITIES = ['defect', 'test-gap', 'doc-copy', 'follow-up', 'bookkeeping'
 const CLOSE_P = 0.2 // symptom check: the top two within this are "close" [PL-1]
 const SHA = /^[0-9a-f]{7,40}$/ // a builder's commit ids must look like this [BD-22]
 const SAME_CAUSE_ROUNDS = 2 // repairs after which an unchanged behaviour-choice failure stops the task [VF-5]
+const SCRATCH = A.scratchDir ? `${A.scratchDir}/${ISSUE.id}` : `${A.worktree}-scratch` // never inside the worktree [IS-19]
+const LOG_DIR = `${SCRATCH}/logs`
+const SHOT_DIR = `${SCRATCH}/screenshots`
+const DECISIONS = A.decisions || []
+const OPEN_ISSUES = A.openIssues || []
+const KINDS = ['bug', 'ux', 'a11y', 'perf', 'docs', 'infra', 'test']
+const SERIOUS = ['privacy', 'security', 'data-loss', 'broken-flow', 'wrong-state'] // each its own issue; anything else is 'minor' and bundled [OR-27]
+const STALE_STAGES = ['verify', 'view', 'gates', 'docs'] // a finding true only until one of these ran [VF-32]
 
 // ---------- helpers ----------
 
@@ -83,6 +98,9 @@ function opts(stage, extra) {
 function list(xs) {
   return xs && xs.length ? xs.map((x) => `  - ${typeof x === 'string' ? x : JSON.stringify(x)}`).join('\n') : '  (none)'
 }
+
+// spec rows a human decision settles [SP-18]; result is set before any prompt runs
+const decidedRows = () => ((result.spec && result.spec.privacy_security_rows) || []).filter((x) => x && Number.isInteger(x.decision_ref) && DECISIONS[x.decision_ref] !== undefined).map((x) => Object.assign({}, x, { decision: DECISIONS[x.decision_ref] }))
 
 const joinCmd = (v) => (Array.isArray(v) ? v.join(' && ') : v)
 
@@ -108,7 +126,7 @@ const LAWS = [
   'Read whole logs: save full output to a file and grep it for "failed"; compare failing SETS, not counts or tails.',
   'Never skip, retry-wrap, loosen, raise timeouts on, or delete a test or guard to go green. Stop and report instead.',
   'Stage explicit paths only. Never `git add -A` / `git add .`.',
-  'Stay in your worktree, branch and ports. Kill every server you start.',
+  'Stay in your worktree, branch and ports. Kill every server you start by process group, then prove it gone with ps.',
   'Never push, tag, bump the version, change repo settings or secrets, or trigger CI. Destructive git (force-push, reset --hard, clean, branch -D, checkout .) is forbidden.',
   'No sensitive identifiers (names, record numbers, birth dates, customer PII) in code, fixtures, commits, docs or output. No production or staging DB/log access.',
   'Only do the task you are given. Do not invent additional work; note adjacent problems as follow-ups.',
@@ -139,8 +157,8 @@ ${cmds()}
 CI-only checks (they need a PR or CI context; never run them as gates, report them as ci_only) [TG-34]:
 ${list(P.ci_only)}
 Env: source ${(P.env && P.env.source) || '(none)'} before tests. Secrets are LINKED from the main checkout; never create dummy secrets or copy secret values.
-Logs: write server and test logs under ${A.worktree}/.logs/<port>/, never a fixed shared path${((P.env && P.env.fixed_paths) || []).length ? ` (the test runner writes these fixed paths; override them: ${P.env.fixed_paths.join(', ')})` : ''} [IS-18].
-${P.env && P.env.shared_db ? 'The dev database is SHARED with other worktrees: functions or migrations another run applied may be there, and yours land on theirs. Use this run\'s own schema or database name when the profile gives one; a failure from another branch\'s DB objects is reported, never fixed [IS-17, TG-11].\n' : ''}Ports: use ONLY backend ${A.ports && A.ports.backend} and frontend ${A.ports && A.ports.frontend} with strict-port flags. NEVER use ${((P.ports && P.ports.reserved) || []).join(', ') || 'the developer default ports'}. Check ownership with lsof before starting a server; kill every server you started before you finish.
+Logs: write server and test logs under ${LOG_DIR}/<port>/ (OUTSIDE the worktree, never committed), never a fixed shared path or a directory inside the worktree${((P.env && P.env.fixed_paths) || []).length ? ` (the test runner writes these fixed paths; override them: ${P.env.fixed_paths.join(', ')})` : ''} [IS-18, IS-19].
+${P.env && P.env.shared_db ? 'The dev database is SHARED with other worktrees: functions or migrations another run applied may be there, and yours land on theirs. Use this run\'s own schema or database name when the profile gives one; a failure from another branch\'s DB objects is reported, never fixed [IS-17, TG-11].\n' : ''}Ports: use ONLY backend ${A.ports && A.ports.backend} and frontend ${A.ports && A.ports.frontend} with strict-port flags. NEVER use ${((P.ports && P.ports.reserved) || []).join(', ') || 'the developer default ports'}. Check ownership with lsof before starting a server. Start each server in its own process group (setsid, or record its PGID) and stop it with kill -- -<PGID>; then prove with \`ps -eo pid,pgid,ppid,command\` that none of your processes survive (orphans with PPID 1, such as a dev server's bundler child, count), not just with lsof [IS-20].
 Search with \`command grep -rn\` or \`rg\` (shell wrappers can skip files).
 
 Decision rule: do not stop or ask the human. Rank the real alternatives${P.ranker && P.ranker.cmd ? ` with \`${P.ranker.cmd}\` (JSON on stdin, >=2 options)` : ' explicitly with probabilities'}, let evidence decide, and record what you decided and why.
@@ -182,6 +200,7 @@ const DIAG = {
     distinguishing_question: { type: ['string', 'null'] },
     decision_required: { type: ['string', 'null'], description: 'menu of options (what survives / what is lost) when the fix is destructive or data-loss-sensitive; else null' },
     packs: { type: 'array', items: { type: 'string' }, description: 'names of domain packs whose trigger this issue meets' },
+    side_findings: { type: 'array', description: 'real problems you saw that are NOT this issue\'s cause', items: { type: 'object', properties: { severity: { type: 'string', enum: SEVERITIES }, finding: { type: 'string' }, file: { type: ['string', 'null'] } }, required: ['severity', 'finding'] } },
     confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
   },
   required: ['method', 'findings', 'evidence', 'candidates', 'ruled_out', 'open_questions', 'confidence'],
@@ -209,8 +228,20 @@ const SPEC_PROPS = {
       required: ['caller', 'before', 'after', 'intended'],
     },
   },
+  user_visible: { type: 'boolean', description: 'true when the change alters what a user sees on any screen; turns on the VIEW lens' },
+  view_targets: { type: 'array', items: { type: 'string' }, description: 'when user_visible: each affected screen and state to screenshot, e.g. "settings / empty", "record page / locked"' },
+  privacy_security_change: { type: 'boolean', description: 'true when the change alters what is on screen or in the DOM when locked or logged out, or how long data lives (caches, storage, retention, logs) [SP-18]' },
+  privacy_security_rows: {
+    type: 'array',
+    description: 'when privacy_security_change: one row per surface. decision_ref is the index of the human decision in the run\'s decisions list that settles the row, else null. Never settled by you or a ranker [SP-18]',
+    items: {
+      type: 'object',
+      properties: { surface: { type: 'string' }, before: { type: 'string' }, after: { type: 'string' }, decision_ref: { type: ['integer', 'null'] } },
+      required: ['surface', 'before', 'after', 'decision_ref'],
+    },
+  },
 }
-const SPEC_REQ = ['root_cause', 'shared_seam', 'mechanism_explains_reported_data', 'user_change', 'out_of_scope', 'docs_impact']
+const SPEC_REQ = ['root_cause', 'shared_seam', 'mechanism_explains_reported_data', 'user_change', 'out_of_scope', 'docs_impact', 'user_visible', 'privacy_security_change']
 const SPEC = { type: 'object', properties: SPEC_PROPS, required: ['spec_path'].concat(SPEC_REQ) }
 
 const TASK = {
@@ -287,6 +318,7 @@ const VERDICT = {
           severity: { type: 'string', enum: SEVERITIES, description: 'defect = wrong behaviour a user could hit, wrong persisted state, or a security or eligibility hole in this branch\'s code; test-gap = untested path; doc-copy = wrong or misleading text; follow-up = real but out of scope; bookkeeping = trailers, ticks, formatting' },
           finding: { type: 'string', description: 'one sentence, naming file:line or the screen' },
           file: { type: ['string', 'null'], description: 'the repo path the finding is about, if any' },
+          until_stage: { type: ['string', 'null'], enum: STALE_STAGES.concat([null]), description: 'when the finding is true only until a later stage runs ("acceptance pending", "not yet committed"): that stage; else null [VF-32]' },
         },
         required: ['severity', 'finding'],
       },
@@ -303,6 +335,7 @@ const VERDICT = {
     failing_test: { type: ['string', 'null'], description: 'when failing: the test that fails' },
     failure_cause: { type: ['string', 'null'], description: 'when failing: its root cause, one sentence' },
     behaviour_choice: { type: 'boolean', description: 'true when the failure hinges on an undecided product behaviour, not a code fault [VF-5]' },
+    privacy_security_change: { type: ['string', 'null'], description: 'a change to what is on screen or in the DOM when locked or logged out, or to how long data lives, that no human-decided spec row covers: what changed, one sentence; else null [SP-18]' },
     summary: { type: 'string' },
   },
   required: ['passed', 'checks', 'unfinished_work', 'code_defect', 'summary'],
@@ -327,6 +360,54 @@ const GATES = {
     known_flaky_matched: { type: 'array', items: { type: 'string' } },
   },
   required: ['head_before', 'all_green', 'gates', 'failures_fixed', 'remaining_failures'],
+}
+
+const VIEW = {
+  type: 'object',
+  properties: {
+    screenshots: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, viewport: { type: 'string' }, before: { type: ['string', 'null'] }, after: { type: ['string', 'null'] } }, required: ['target', 'viewport', 'before', 'after'] } },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          cause: { type: 'string', enum: ['branch', 'pre-existing'], description: 'branch = absent in the before shot, present after' },
+          severity: { type: 'string', enum: SEVERITIES },
+          kind: { type: 'string', enum: KINDS },
+          finding: { type: 'string', description: 'one sentence naming the screen, state and viewport' },
+          screenshots: { type: 'array', items: { type: 'string' } },
+          file: { type: ['string', 'null'] },
+        },
+        required: ['cause', 'severity', 'finding', 'screenshots'],
+      },
+    },
+    processes_left: { type: 'integer', description: 'processes of yours still alive per ps after cleanup; must be 0' },
+  },
+  required: ['screenshots', 'findings', 'processes_left'],
+}
+
+const HARVEST = {
+  type: 'object',
+  properties: {
+    side_issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          body: { type: 'string' },
+          kind: { type: 'string', enum: KINDS },
+          severity: { type: 'string', enum: SERIOUS.concat(['minor']) },
+          evidence: { type: 'array', items: { type: 'string' }, description: 'file:line at HEAD, or a screenshot path from this run' },
+          duplicate_of: { type: ['integer', 'null'] },
+          bundle: { type: 'boolean' },
+        },
+        required: ['title', 'body', 'kind', 'severity', 'evidence', 'duplicate_of', 'bundle'],
+      },
+    },
+    dropped: { type: 'array', items: { type: 'object', properties: { finding: { type: 'string' }, reason: { type: 'string' } }, required: ['finding', 'reason'] } },
+  },
+  required: ['side_issues', 'dropped'],
 }
 
 const DOCS = {
@@ -363,6 +444,7 @@ If two plausible symptoms share this surface, give the one question that separat
 If the only fixes are destructive or lose data, fill decision_required with a menu (each option: what survives, what is lost).
 Domain packs live in ${SKILL}/references/packs/. The first paragraph of each says when it applies; return in packs every name whose trigger this issue meets.
 Delete throwaway probes; keep a reproduction only if it is a proper regression test (and say where).
+Real problems you meet that are NOT this issue's cause go in side_findings (severity, one sentence with file:line); never chase them.
 ${preamble()}`
 
 const SPEC_RULES = `Spec rules: fix the root cause at the shared seam every caller routes through, with the smallest change that fully resolves the REPORTED symptom.
@@ -371,7 +453,12 @@ EXPLICITLY OUT OF SCOPE (adjacent cleanup becomes follow-up issues, listed by ti
 If no diagnosed mechanism produces the symptom on the reported data, say so (mechanism_explains_reported_data=false) and specify the measurement needed or a fix correct regardless plus in-product evidence capture.
 If the change contradicts an ADR, write "Contradicts ADR-NNNN … but worth reopening because …". For data-sensitive changes, write the load-bearing invariant and its catastrophic failure mode.
 Prefer the fix that works with already-deployed state. Delete low-value broken paths rather than repairing them. Use glossary terms.
-If the change alters a shared component's default or behaviour, walk EVERY caller's flow (not just its import) and fill caller_flows: caller, flow before, flow after, intended yes|no|unsure. A row the report, spec and ADRs do not settle is "unsure"; never assume it [SP-17].`
+If the change alters a shared component's default or behaviour, walk EVERY caller's flow (not just its import) and fill caller_flows: caller, flow before, flow after, intended yes|no|unsure. A row the report, spec and ADRs do not settle is "unsure"; never assume it [SP-17].
+Set user_visible=true when the change alters what a user sees on any screen, and list each affected screen and state (locked, loading, empty, error where they apply) in view_targets.
+If the change alters what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs), set privacy_security_change=true and add one privacy_security_rows row per surface.
+That is ALWAYS the human's decision: never yours, never a ranker's, however confident. A row's decision_ref is the index of the human decision below that settles it, else null [SP-18].
+Human decisions for this run (verbatim, by index):
+${DECISIONS.length ? DECISIONS.map((d, i) => `  [${i}] ${d}`).join('\n') : '  (none)'}`
 
 const PLAN_RULES = `Plan rules: the plan is where each build task's code is written. Put ACTUAL code and exact signatures in it. Banned: "TBD", "add appropriate handling", "similar to Task N".
 Use ${SMALL ? 'exactly 1 task' : '3 to 9 tasks (slice hard at about 10)'}, root fix first. Each task is a vertical slice that delivers observable behaviour through a real interface; never split by layer.
@@ -456,11 +543,44 @@ Checklist (record every item in checks):
 10. Claims in docs and comments are true. 11. The feature is reachable from the UI. 12. Any gate is correct in both directions (no leak, full coverage).
 13. None of the build pitfalls in ${SKILL}/references/verification.md section 2 (stripped fields, orphaned triggers, cache-masked indicators, unhandled promise chains, route order, effect loops, silent not_configured, hardcoded formats, and the rest).
 14. Each test drives the interface it names. A test that imports internals (private helpers, module internals no caller uses) is a test-gap finding.
+15. Privacy and security behaviour [SP-18]: does the diff change what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs)? Human-decided rows from the spec: ${JSON.stringify(decidedRows())}. Any such change those rows do not cover goes in privacy_security_change, in one sentence; else null.
+A finding that is true only until a later stage runs ("acceptance pending", "not yet committed", "gates not run") names that stage in until_stage [VF-32].
 Kill any server you start. code_defect=true ONLY for real logic defects, not bookkeeping. unfinished_work must name files and symbols precisely.
 Put everything else you noticed in non_blocking_findings, each with a severity (defect | test-gap | doc-copy | follow-up | bookkeeping) and the file it is about. Tag honestly: a reachable wrong behaviour (a page stuck loading, a raw 500, misleading copy) is a defect or doc-copy even if it is outside this task [VF-31, VF-11].
 Wrong persisted state (a stale field left behind, a record that should have been cleared) or a security or eligibility hole (someone allowed who should not be) in THIS branch's code is a defect, never a follow-up [VF-31].
 A defect in this task's own files sends the task back for repair even if everything else passes.
 When failing, name failing_test and failure_cause. Set behaviour_choice=true only when the failure hinges on an undecided product behaviour (what SHOULD happen), not a code fault [VF-5].
+${preamble()}`
+
+const viewPrompt = (round, prior) => `You are the VIEW agent (the visual lens) for issue ${ISSUE.id}, round ${round}. You BUILD NOTHING and fix nothing: you look and report.
+The spec (${SPEC_REF}) says this change is user-visible. Targets (screen / state):
+${list(result.spec.view_targets)}
+For each screen also capture the states the spec names among locked, loading, empty and error.
+1. BEFORE: make a throwaway detached worktree at ${BASE}, OUTSIDE ${A.worktree}. Do a real install (${(P.commands && P.commands.install) || 'the frozen-lockfile install'})${P.commands && P.commands.post_install ? ` then ${joinCmd(P.commands.post_install)}` : ''}, link only the env and secrets [IS-16]. Start the app on this run's ports with TEST DATA ONLY (synthetic accounts and records; never production, staging or a real user's data). Screenshot every target at 390x844 and at 1440x900 [VF-23]. Stop its servers by process group, then remove the worktree.
+2. AFTER: the same targets, viewports and data in ${A.worktree} at HEAD.
+Screenshots go in ${SHOT_DIR}/round-${round}/ as <screen>-<state>-<viewport>-<before|after>.png. That directory is outside the worktree; never copy a screenshot into it or commit one [IS-19].
+3. Judge the AFTER shots against the design docs (${[].concat((P.docs && P.docs.design) || []).join(', ') || 'none in the profile'}) and ${SKILL}/references/packs/ux.md, and compare them with BEFORE.
+4. Each finding: cause "branch" when the BEFORE shot does not show it and AFTER does (this branch caused it), "pre-existing" when BEFORE shows it too; a severity (defect = a visual defect a user would hit: overlap, clipping, unreadable text, a blank or stuck state, a control out of reach); a kind; the screenshot paths; the file if you can name it.
+${prior && prior.length ? `Round 1 found these branch defects and a repair was made. Check that each is gone:\n${list(prior.map((f) => f.finding))}\n` : ''}Report processes_left from ps after cleanup; it must be 0.
+${preamble()}`
+
+const viewRepairPrompt = (defects, files) => `You are REPAIRING visual defects that this branch caused in issue ${ISSUE.id}. An independent VIEW agent compared before and after screenshots. Fix EXACTLY these:
+${defects.map((f) => `- ${f.finding} (screenshots: ${(f.screenshots || []).join(', ') || 'none'})`).join('\n')}
+Files you may touch: ${files.join(', ')}. Commit the fix (explicit paths, trailers). Do not weaken any test. Report commands and real output.
+${preamble()}`
+
+const harvestPrompt = (items) => `You are the HARVEST agent for issue ${ISSUE.id}. You build nothing and file nothing: you DRAFT side issues. The main loop re-checks each draft against the code and files it.
+Findings and follow-ups from every stage of this run (stale ones already dropped), JSON:
+${JSON.stringify(items).slice(0, 30000)}
+Open issues on the tracker (dedupe against these):
+${list(OPEN_ISSUES.map((i) => `#${i.number} ${i.title}${(i.labels || []).length ? ` [${i.labels.join(', ')}]` : ''}`))}
+Rules [OR-27]:
+1. Re-read each item against the code at HEAD (git diff ${BASE}...HEAD shows this branch). A defect in THIS branch's code is never a side issue: put it in dropped with reason "branch defect: not repaired" so the audit sees it.
+2. Drop anything ${A.worktree}/.out-of-scope/ (if it exists) or a closed wontfix decision rejects, anything no longer true, and bookkeeping. Every drop goes in dropped with its reason.
+3. One draft per distinct problem. If an open issue already covers it, set duplicate_of to its number and write the body as a COMMENT adding only the new evidence.
+4. severity: privacy, security, data-loss, broken-flow (a user cannot finish a task) or wrong-state (wrong persisted data) for serious problems; everything else is minor. kind: ${KINDS.join(' | ')}.
+5. evidence: file:line at HEAD or a screenshot path from this run, at least one. Claim only what the evidence shows.
+6. The body starts "Found while resolving #${ISSUE.id}." and holds no names, record numbers, birth dates or customer data [PS-1, PS-2]. Never attach or reference a screenshot of real user data.
 ${preamble()}`
 
 const repairPrompt = (t, v) => `You are REPAIRING task ${t.id} of issue ${ISSUE.id}: ${t.title}. A previous attempt was rejected by an independent verifier. Fix EXACTLY this:
@@ -580,6 +700,15 @@ async function runTask(t, prefix) {
         attempts.push({ round, verdict: null })
         return { id: t.id, title: t.title, status: 'failed', reason: 'verifier died twice', commits: shas, attempts, build: b }
       }
+      if (v.privacy_security_change) {
+        // a privacy or security behaviour change no human decided: never repaired or ranked away [SP-18]
+        attempts.push({ round, passed: false, code_defect: false, summary: v.summary, non_blocking: v.non_blocking_findings || [] })
+        return {
+          id: t.id, title: t.title, status: 'decision_required', reason: 'privacy or security behaviour change with no human decision',
+          decision_required: `${t.id}: ${v.privacy_security_change} This changes privacy or security behaviour; decide whether it is intended, then relaunch with the answer in decisions [SP-18].`,
+          commits: shas, attempts, build: b, repairs: round,
+        }
+      }
       const nb = (v.non_blocking_findings || []).slice()
       let own = []
       const why = []
@@ -669,26 +798,81 @@ function fitVerdict(options) {
 
 // ---------- findings and the compact return [VF-31, OR-26] ----------
 
-// One list from every verifier: dedupe on normalised text, keep the most severe tag, record which tasks said it.
+// stages that ran and passed; a finding true only until one of them ran is stale [VF-32]
+function passedStages(r) {
+  const ts = (r.tasks || []).filter(Boolean)
+  return {
+    verify: ts.length > 0 && ts.every((t) => t.status === 'verified'),
+    view: !!(r.view && !(r.view_branch_defects || []).length),
+    gates: !!(r.gates && r.gates.all_green),
+    docs: !!(r.docs && (r.docs.decided_at === 'spec' || (r.docs_verdict && r.docs_verdict.passed))),
+  }
+}
+
+// One list from every stage: dedupe on normalised text, keep the most severe tag, record which stages said it,
+// and drop stale findings whose condition a later, passing stage settled [VF-31, VF-32].
 function mergeFindings(r) {
   const merged = new Map()
+  const passed = passedStages(r)
+  let superseded = 0
   const add = (f, source) => {
     const item = typeof f === 'string' ? { finding: f } : f || {}
     if (!item.finding) return
+    if (item.until_stage && passed[item.until_stage]) return void superseded++
     const sev = SEVERITIES.includes(item.severity) ? item.severity : 'defect' // untagged counts as a defect, so it gets re-read
-    const key = String(item.finding).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+    const ev = [item.file].concat(item.screenshots || []).filter(Boolean)
+    const key = norm(item.finding)
     const prev = merged.get(key)
-    if (!prev) return merged.set(key, { severity: sev, finding: item.finding, sources: [source] })
+    if (!prev) return merged.set(key, Object.assign({ severity: sev, finding: item.finding, sources: [source] }, ev.length ? { evidence: ev } : {}, item.cause === 'branch' ? { branch: true } : {}))
     if (SEVERITIES.indexOf(sev) < SEVERITIES.indexOf(prev.severity)) prev.severity = sev
     if (!prev.sources.includes(source)) prev.sources.push(source)
+    if (ev.length) prev.evidence = [...new Set((prev.evidence || []).concat(ev))]
   }
+  for (const d of r.diagnoses || []) for (const f of (d && d.side_findings) || []) add(f, 'diagnose')
   for (const t of r.tasks || []) for (const a of (t && t.attempts) || []) for (const f of a.non_blocking || []) add(f, t.id)
+  for (const f of (r.view && r.view.findings) || []) add(f, 'view')
   for (const f of (r.gates_verdict && r.gates_verdict.non_blocking_findings) || []) add(f, 'gates')
   for (const f of (r.docs_verdict && r.docs_verdict.non_blocking_findings) || []) add(f, 'docs')
-  const out = {}
-  for (const sev of SEVERITIES) out[sev] = []
-  for (const m of merged.values()) out[m.severity].push(m)
-  return out
+  const findings = {}
+  for (const sev of SEVERITIES) findings[sev] = []
+  for (const m of merged.values()) findings[m.severity].push(m)
+  return { findings, superseded }
+}
+
+// Harvest drafts, checked in code: real open-issue numbers, a title match the agent missed, severity decides
+// bundle, the "found while" line, identifier scrub, no evidence = no draft. Minor drafts render as ONE issue [OR-27].
+function shapeDrafts(h) {
+  const open = new Set(OPEN_ISSUES.map((i) => i.number))
+  const titleMatch = (t) => {
+    const n = norm(t)
+    const hit = OPEN_ISSUES.find((i) => { const m = norm(i.title); return m === n || (Math.min(m.length, n.length) >= 12 && (m.includes(n) || n.includes(m))) })
+    return hit ? hit.number : null
+  }
+  const pats = (P.privacy && P.privacy.identifier_patterns) || []
+  const scrub = (x) => pats.reduce((acc, p) => acc.replace(new RegExp(p, 'g'), '[redacted]'), String(x || ''))
+  const found = `Found while resolving #${ISSUE.id}`
+  const dropped = ((h && h.dropped) || []).slice()
+  const drafts = []
+  const seen = new Set()
+  for (const d of (h && h.side_issues) || []) {
+    if (!d || !d.title) continue
+    if (!(d.evidence || []).length) { dropped.push({ finding: d.title, reason: 'no evidence' }); continue }
+    if (seen.has(norm(d.title))) continue
+    seen.add(norm(d.title))
+    const severity = SERIOUS.includes(d.severity) ? d.severity : 'minor'
+    let body = scrub(d.body)
+    if (!body.includes(found)) body = `${found}.\n\n${body}`
+    drafts.push({
+      title: scrub(d.title), body, kind: KINDS.includes(d.kind) ? d.kind : 'bug', severity, evidence: d.evidence,
+      duplicate_of: open.has(d.duplicate_of) ? d.duplicate_of : titleMatch(d.title),
+      bundle: severity === 'minor',
+    })
+  }
+  const minor = drafts.filter((d) => d.bundle && !d.duplicate_of)
+  const bundle_issue = minor.length
+    ? { title: `Minor issues found while resolving #${ISSUE.id} (${minor.length})`, body: [`${found}.`, ''].concat(minor.map((d) => `- [${d.kind}] ${d.title} (${d.evidence.join(', ')})`)).join('\n') }
+    : null
+  return { side_issues: drafts, bundle_issue, dropped }
 }
 
 function metrics(r) {
@@ -703,15 +887,18 @@ function metrics(r) {
     promoted_defects: attempts.reduce((n, a) => n + (a.promoted_defects || 0), 0),
     bad_commit_reports: attempts.filter((a) => a.bad_commits).length, // [BD-22]
     gates_commits: (r.gates && r.gates.commits && r.gates.commits.length) || 0,
+    view_repairs: r.view_repair ? 1 : 0,
+    superseded_findings: mergeFindings(r).superseded, // [VF-32]
     agents: STAGES.reduce((n, s) => n + s.agents, 0),
     stages: STAGES,
   }
 }
 
 function compact(r) {
-  const findings = mergeFindings(r)
+  const { findings } = mergeFindings(r)
   const g = r.gates
-  const commits = [...new Set([].concat(...(r.tasks || []).map((t) => (t && t.commits) || []), (g && g.commits) || [], (r.docs && r.docs.commits) || []))]
+  const viewCommits = ((r.view_repair && r.view_repair.commits) || []).filter((x) => SHA.test(String(x)))
+  const commits = [...new Set([].concat(...(r.tasks || []).map((t) => (t && t.commits) || []), viewCommits, (g && g.commits) || [], (r.docs && r.docs.commits) || []))]
   const cands = [].concat(...(r.diagnoses || []).map((d) => d.candidates || [])).sort((a, b) => (b.rank_p || 0) - (a.rank_p || 0))
   return {
     issue: r.issue, size: r.size, status: r.status, stage: r.stage || null, reason: r.reason || null,
@@ -737,8 +924,15 @@ function compact(r) {
     } : null,
     gates_commits_verified: r.gates_commits_verified === undefined ? null : r.gates_commits_verified,
     docs: r.docs ? { docs_impact: r.docs.docs_impact, justification: r.docs.justification, files: r.docs.files, decided_at: r.docs.decided_at || 'docs', verified: r.docs_verdict ? r.docs_verdict.passed : null } : null,
+    view: r.spec && r.spec.user_visible ? {
+      ran: !!r.view, screenshots_dir: SHOT_DIR, screenshots: r.view ? (r.view.screenshots || []).length : 0,
+      repaired: !!r.view_repair, branch_defects_open: (r.view_branch_defects || []).length, processes_left: r.view ? r.view.processes_left : null,
+    } : null,
     commits,
     findings, // defects and test gaps first; the post-run audit re-triages this list [VF-11]
+    side_issues: r.harvest ? r.harvest.side_issues : [], // drafts; the main loop re-checks and files them [OR-27]
+    bundle_issue: r.harvest ? r.harvest.bundle_issue : null,
+    side_issue_label: (P.labels && P.labels['needs-triage']) || 'needs-triage',
     follow_ups: findings['follow-up'].map((f) => f.finding).concat((r.spec && r.spec.out_of_scope) || []),
     manual_checks: (r.spec && r.spec.manual_checks) || [],
     metrics: metrics(r),
@@ -764,6 +958,8 @@ function renderSummary(c) {
     `What changes for the user: ${c.user_change || 'not stated'}.`,
     `Gates: ${c.gates ? c.gates.table.map((x) => `${x.command} ${tick(x)}`).join(', ') + (c.gates.ci_only.length ? ` (ci_only: ${c.gates.ci_only.length})` : '') : 'not run'}${c.gates_commits_verified === null ? '' : `; gates commits verified: ${c.gates_commits_verified ? 'yes' : 'NO'}`}`,
     `Findings: defects ${F.defect.length}; test gaps ${F['test-gap'].length}; doc/copy ${F['doc-copy'].length}; follow-ups to file ${c.follow_ups.length}`,
+    ...(c.view ? [`View: ${c.view.ran ? `${c.view.screenshots} screenshot sets in ${c.view.screenshots_dir}; branch defects open ${c.view.branch_defects_open}${c.view.repaired ? ' (after 1 repair)' : ''}` : 'did not run'}`] : []),
+    `Side issues to file: ${c.side_issues.filter((d) => !d.bundle && !d.duplicate_of).length} separate, ${c.bundle_issue ? `1 bundle of ${c.side_issues.filter((d) => d.bundle && !d.duplicate_of).length}` : 'no bundle'}, ${c.side_issues.filter((d) => d.duplicate_of).length} comments on open issues`,
     `Commits (git log ${BASE}..HEAD): ${c.commits.map((s) => String(s).slice(0, 7)).slice(0, 12).join(' ') || 'none'}`,
     `Check by hand: ${c.manual_checks.join('; ') || 'the reporter\'s own flow'}`,
     `Open: ${open.join('; ') || 'nothing'}`,
@@ -782,6 +978,8 @@ function capReturn(c) {
     for (const sev of SEVERITIES) c.findings[sev].forEach((f) => { f.finding = clip(f.finding, n) })
     c.follow_ups = c.follow_ups.map((f) => clip(f, n))
     c.tasks.forEach((t) => { if (t) t.unfinished_work = clip(t.unfinished_work, n) })
+    c.side_issues.forEach((d) => { d.body = clip(d.body, n * 2) })
+    if (c.bundle_issue) c.bundle_issue.body = clip(c.bundle_issue.body, n * 4)
   }
   const drop = (sev) => { c.findings_omitted = Object.assign(c.findings_omitted || {}, { [sev]: c.findings[sev].length }); c.findings[sev] = [] }
   const steps = [
@@ -847,6 +1045,17 @@ if (A.resumeFrom === 'build') {
     return finish(Object.assign(result, {
       status: 'decision_required', stage: 'spec',
       decision_required: 'A shared component changes, and these callers\' new flow is not known to be intended:\n' + unsure.map((x) => `- ${x.caller}: before "${x.before}"; after "${x.after}". Intended?`).join('\n'),
+    }))
+  }
+  // privacy or security behaviour: the human decides, never the spec agent or a ranker [SP-18]
+  const psRows = result.spec.privacy_security_rows || []
+  const decided = decidedRows()
+  if (result.spec.privacy_security_change && (!psRows.length || decided.length < psRows.length)) {
+    const open = psRows.filter((x) => !decided.some((d) => d.surface === (x && x.surface)))
+    return finish(Object.assign(result, {
+      status: 'decision_required', stage: 'spec',
+      decision_required: 'This change alters privacy or security behaviour (what shows when locked or logged out, or how long data lives). Decide each row, then relaunch with the answers in decisions:\n'
+        + (open.length ? open.map((x) => `- ${x.surface}: before "${x.before}"; after "${x.after}". Intended?`).join('\n') : '- (the spec named no surface: which screens or data change?)'),
     }))
   }
   if (!result.spec.mechanism_explains_reported_data) log('Spec: no diagnosed mechanism fully explains the reported data. Proceeding with a fix that is correct regardless, plus evidence capture [SP-3].')
@@ -921,6 +1130,23 @@ if (tasks.length > 1) {
 }
 result.tasks = tasks.map((t) => byId[t.id])
 
+// VIEW lens: only for user-visible changes. A defect this branch caused gets ONE repair, then a human decides [VF-23]
+const branchDefects = (v) => ((v && v.findings) || []).filter((f) => f && f.cause === 'branch' && f.severity === 'defect')
+if (result.spec.user_visible) {
+  stage('View')
+  result.view = await call(viewPrompt(1), opts('verify', { label: 'view #1', phase: 'View', schema: VIEW }))
+  let bd = branchDefects(result.view)
+  if (bd.length) {
+    const hit = tasks.filter((t) => bd.some((f) => touchesTask(f, t)))
+    const files = [...new Set([].concat(...(hit.length ? hit : tasks).map((t) => t.files || [])))]
+    result.view_repair = await call(viewRepairPrompt(bd, files), opts('repair', { label: 'repair view #1', phase: 'View', schema: BUILD }))
+    result.view = await call(viewPrompt(2, bd), opts('verify', { label: 'view #2', phase: 'View', schema: VIEW }))
+    bd = branchDefects(result.view)
+    if (bd.length) result.view_decision = 'Visual defects this branch caused remain after one repair:\n' + bd.map((f) => `- ${f.finding} (${(f.screenshots || []).join(', ')})`).join('\n')
+  }
+  result.view_branch_defects = result.view ? bd : []
+}
+
 stage('Gates')
 result.gates = await call(gatesPrompt(), opts('gates', { label: 'gates', schema: GATES }))
 if (result.gates && (result.gates.commits || []).length) {
@@ -940,8 +1166,24 @@ if (/^none\b/i.test(String(result.spec.docs_impact || '').trim())) {
   }
 }
 
+// HARVEST: side findings from every stage become issue drafts; skipped when there is nothing to harvest [OR-27]
+{
+  const { findings } = mergeFindings(result)
+  const items = [].concat(...SEVERITIES.filter((s) => s !== 'bookkeeping').map((s) => findings[s].filter((f) => !f.branch)))
+    .concat(((result.spec && result.spec.out_of_scope) || []).map((f) => ({ severity: 'follow-up', finding: f, sources: ['spec'] })))
+    .concat(((result.gates && result.gates.remaining_failures) || []).map((f) => ({ severity: 'defect', finding: f, sources: ['gates'] })))
+  if (items.length) {
+    stage('Harvest')
+    const h = await call(harvestPrompt(items), opts('harvest', { label: 'harvest', schema: HARVEST }))
+    if (!h) log('Harvest agent died: the main loop drafts side issues from the findings list.')
+    result.harvest = shapeDrafts(h)
+  }
+}
+
 const allVerified = result.tasks.every((t) => t && t.status === 'verified')
-result.status = allVerified && result.gates && result.gates.all_green && result.gates_commits_verified !== false ? 'verified' : 'partial'
-const decisions = result.tasks.filter((t) => t && t.status === 'decision_required') // [VF-5]
-if (decisions.length) Object.assign(result, { status: 'decision_required', decision_required: decisions.map((t) => t.decision_required).join('\n') })
+const viewOk = !result.spec.user_visible || (result.view && !result.view_branch_defects.length)
+result.status = allVerified && viewOk && result.gates && result.gates.all_green && result.gates_commits_verified !== false ? 'verified' : 'partial'
+const decisions = result.tasks.filter((t) => t && t.status === 'decision_required').map((t) => t.decision_required) // [VF-5]
+if (result.view_decision) decisions.push(result.view_decision)
+if (decisions.length) Object.assign(result, { status: 'decision_required', decision_required: decisions.join('\n') })
 return finish(result) // compact and capped, summary rendered from the data [OR-26]

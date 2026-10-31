@@ -69,9 +69,11 @@ human: {tests_on: staging}
 #   adr_dir: <path or null>
 #   glossary: <path or null>
 #   index: <path that must link new specs/ADRs>
+#   design: [<design system / style guide docs>]   # the VIEW lens judges screenshots against these
 # issues:
 #   tracker: github
 #   close_trailer: "Closes #{n}"  # or "Ships: #{n}" when the main line is not production
+#   auto_file: true               # false: side-issue drafts go in the summary, unfiled [OR-27]
 # labels:                         # role → this repo's label string, only where they differ
 #   needs-triage: needs-triage
 #   needs-info: needs-info
@@ -93,6 +95,7 @@ human: {tests_on: staging}
 #   repair: {model: null, effort: high}   # one tier above build
 #   gates: {model: <mid>, effort: medium}
 #   docs: {model: <mid>, effort: medium}
+#   harvest: {model: <mid>, effort: medium}
 #   _excluded: [<tiers that failed the obey probe>]
 # budget:
 #   max_concurrent_runs: 3

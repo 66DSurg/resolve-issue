@@ -15,7 +15,7 @@ When the profile is missing, discover it before the first issue. Do this inline.
 4. **Find the ports.** Find the developer's default dev ports (framework configs, `.env*.example`, proxy configs). They go in `ports.reserved`. Pick a spare range for agents [IS-3].
 5. **Find the env and secrets.** Find the gitignored files and directories a fresh worktree needs (`.env`, `secrets/`, local certs). They go in `env.link`, to be linked and never copied [IS-2]. Find the codegen or sync step a fresh install needs before tests load (framework sync, ORM generate) and record it as `commands.post_install` [IS-16].
 5b. **Find the shared state.** If worktrees share one dev database and the tests apply database functions or migrations, set `env.shared_db: true` [IS-17]. Grep the test runner and its scripts for fixed log files, temp dirs and sockets, and list them in `env.fixed_paths` [IS-18].
-6. **Find the docs.** Look for the changelog and its Unreleased heading, VERSION, user docs, developer docs, the ADR directory, the glossary, the docs index, and doc-check scripts [DC-9].
+6. **Find the docs.** Look for the changelog and its Unreleased heading, VERSION, user docs, developer docs, the ADR directory, the glossary, the docs index, doc-check scripts, and any design system or style guide (`docs.design`, read by the VIEW lens) [DC-9].
 7. **Find the tracker.** Find the issue host, the label strings for each canonical role [OR-25], and how issues are closed (`Closes #N`, or a production-gated trailer) [GR-10]. The roles are the `triage` skill's five, `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human` and `wontfix`, plus `in-progress` and `keep-open`. Record only the ones whose label string differs from the role name.
 8. **Find the commit conventions.** Read `git log -50 --format='%s%n%b'` for the subject format and trailers. Ask the human which trailers agents must add [GR-4].
 9. **Find the laws.** Look for existing guard tests, lint rules and "never" statements in the agent-context files, and turn them into numbered laws [SP-14].
@@ -41,9 +41,11 @@ docs:
   changelog: CHANGELOG.md
   unreleased_heading: "## Unreleased"
   version_file: VERSION
+  design: []                     # design docs the VIEW lens judges screenshots against (with the ux pack)
 issues:
   tracker: github
   close_trailer: "Closes #{n}"   # use "Ships: #{n}" when the main line is not production
+  auto_file: true                # the main loop files the run's side-issue drafts after the audit [OR-27]
 labels: {}                       # role → label string; a missing role uses its own name
 git:
   subject: "<summary> (#{n})"
@@ -56,6 +58,7 @@ tiers:                           # references/cost.md
   repair: {model: null, effort: high}   # one tier above build
   gates: {model: <mid>, effort: medium}
   docs: {model: <mid>, effort: medium}
+  harvest: {model: <mid>, effort: medium}   # the VIEW agent uses the verify tier
 budget:
   max_concurrent_runs: 3
   max_parallel_builders: 4

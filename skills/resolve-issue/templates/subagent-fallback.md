@@ -10,7 +10,7 @@ Where the harness supports it, run each subagent in the background, so the conve
    - If any diagnosis returns `decision_required`, STOP and show the human the menu [SP-11].
    - `stopAfter: 'diagnose'` ("diagnose only") ends here.
 2. **Spec.** Run 1 agent with both diagnoses pasted verbatim. It writes `spec.md` and returns the SPEC JSON.
-2b. If the spec's caller table has an "unsure" row, STOP and ask the human [SP-17].
+2b. If the spec's caller table has an "unsure" row, STOP and ask the human [SP-17]. Likewise if `privacy_security_change` is true and any row lacks a human decision [SP-18].
 3. **Plan.** Run 1 agent. It writes `plan.md` and returns the task list as JSON. Count the waves; a fully serial medium plan (more than two tasks) gets one re-plan [PL-15]. For a small issue, steps 2 and 3 are one agent writing one task, with the spec in the root-fix commit body (the template's spec-plan prompt). Parse that list, and from here on iterate over it, never over a list you typed [PL-3].
 4. **Symptom check**, only when no diagnosis measured a reproduction. Run 1 fresh agent with the fit prompt, then compute the verdict yourself from its probabilities: top two within 0.2 is close. If it is not `reported`, go back to step 1 with what you learned [PL-1]. `stopAfter: 'plan'` ends here; resume at step 5 from the committed plan.
 5. **Build in waves.** Keep these in a scratch file, `run-state.json`: `done`, `failed`, `remaining`.
@@ -21,8 +21,10 @@ Where the harness supports it, run each subagent in the background, so the conve
    - Append every verdict's `non_blocking_findings` (each tagged defect, test-gap, doc-copy, follow-up or bookkeeping) to `findings` in `run-state.json`. Dedupe on normalised text and keep the most severe tag [VF-31].
 7. **Repair.** On rejection, launch a repair agent one tier up from build, with `unfinished_work` verbatim. Then re-verify. Do at most 3 rounds, then mark the task failed. If the same test fails for the same behaviour-choice cause after 2 repairs, stop and ask the human instead [VF-5].
 8. **Completeness**, when the plan has more than one task. Run 1 agent to cross-check the plan's units against the tree, and run a completion build for exactly the missing units [VF-13, OR-10].
+8b. **View**, only when the spec sets `user_visible`. Run 1 agent with the view prompt (it builds nothing). A defect it attributes to this branch gets 1 repair agent and 1 re-view; still there, stop with `decision_required` [VF-23].
 9. **Gates.** Run 1 agent with the gates prompt and its fixed command list [TG-6]. If it committed anything, run 1 fresh verifier over `git diff <head_before>..HEAD`. Then re-run the gate commands yourself before you believe the result [VF-10]. Do not run the profile's `ci_only` checks [TG-34].
 10. **Docs**, only when the spec's docs impact is not "none". Run 1 agent. If it updated docs, run 1 verifier on the doc claims [VF-6].
+10b. **Harvest**, when the findings list is not empty. Run 1 agent with the harvest prompt, the open issues and `.out-of-scope/`, then apply `shapeDrafts` from the template by hand: real `duplicate_of`, bundle by severity, evidence required, "Found while resolving #N", identifiers scrubbed [OR-27].
 11. **Audit and summary.** Do SKILL.md Step 4, then Step 5. Write the summary from `run-state.json` in the shape in `references/communication.md`, not from memory. Work from the merged findings list, defects and test gaps first, and keep the subagents' long outputs in files you reference by path rather than pasting them into the summary [OR-26]. Stop.
 
 ## Without any subagents

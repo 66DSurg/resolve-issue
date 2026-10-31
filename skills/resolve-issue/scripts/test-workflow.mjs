@@ -3,7 +3,8 @@
 // path, the verification holes (builder report, defect-on-pass, gates commits), stopAfter/resumeFrom,
 // the rendered summary, per-stage metrics, and the second-dogfood rules: wave count and one re-plan,
 // SHA-only commit ids, per-acceptance-row negative controls, caller-flow decisions, the behaviour-choice
-// stop in repair, post_install. Run: node scripts/test-workflow.mjs
+// stop in repair, post_install; and the third-dogfood rules: the VIEW lens, the side-issue harvest, privacy
+// decisions at spec and verify, stale findings, logs outside the worktree. Run: node scripts/test-workflow.mjs
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 
@@ -30,22 +31,26 @@ async function run({
   fit = 'reported', rejectOnce = [], dieBuild = [], alwaysReject = [], findings = () => [], userChange = 'Search shows results again.',
   size = 'medium', tasks = TASKS, measured = false, docsImpact = 'none', gatesCommits = [], gatesPass = true, extra = {},
   serialReason = 'T4 and T5 form a cycle', replanTasks = null, buildCommits = null, verdictExtra = () => ({}), callerFlows = [],
+  specExtra = {}, view = () => ({ screenshots: [], findings: [], processes_left: 0 }), harvest = () => ({ side_issues: [], dropped: [] }),
+  gatesGreen = true, diagExtra = {},
 } = {}) {
   const calls = []
   const seen = {}
   const waves = []
   let spent = 0
-  const specFields = { root_cause: 'r', shared_seam: 'h', mechanism_explains_reported_data: true, user_change: userChange, out_of_scope: [], docs_impact: docsImpact, docs_justification: 'internal', caller_flows: callerFlows }
+  const specFields = { root_cause: 'r', shared_seam: 'h', mechanism_explains_reported_data: true, user_change: userChange, out_of_scope: [], docs_impact: docsImpact, docs_justification: 'internal', caller_flows: callerFlows, user_visible: false, privacy_security_change: false, ...specExtra }
   const agent = async (prompt, o = {}) => {
     const label = o.label || ''
     calls.push({ label, model: o.model, prompt })
     spent += 1000
-    if (label.startsWith('diagnose')) return { method: 'm', findings: 'f', evidence: measured ? ['probe: 0 of 3 rows rendered'] : [], candidates: [{ cause: 'stale cache', rank_p: 0.7, verdict: 'confirmed', evidence: 'e' }], ruled_out: [], open_questions: [], confidence: 'high', decision_required: null }
+    if (label.startsWith('diagnose')) return { method: 'm', findings: 'f', evidence: measured ? ['probe: 0 of 3 rows rendered'] : [], candidates: [{ cause: 'stale cache', rank_p: 0.7, verdict: 'confirmed', evidence: 'e' }], ruled_out: [], open_questions: [], confidence: 'high', decision_required: null, ...diagExtra }
     if (label === 'spec') return Object.assign({ spec_path: 's.md' }, specFields)
     if (label === 'plan') return { plan_path: 'p.md', tasks, serial_reason: serialReason }
     if (label === 'replan') return replanTasks ? { plan_path: 'p.md', tasks: replanTasks, serial_reason: null } : { plan_path: 'p.md', tasks, serial_reason: 'each task needs the previous one\'s code' }
     if (label === 'spec plan' || label === 'load plan') return Object.assign({ spec_path: null, plan_path: 'p.md', tasks }, specFields)
     if (label === 'symptom check') return { options: FITS[fit], verdict: 'reported', reason: 'r' } // the model's own verdict is ignored
+    if (label.startsWith('view #')) return view(Number(label.split('#')[1]))
+    if (label === 'harvest') return harvest(prompt)
     if (label === 'verify gates') return { passed: gatesPass, checks: [], unfinished_work: '', code_defect: !gatesPass, summary: '', non_blocking_findings: [] }
     const id = label.split(' ')[1]
     if (label.startsWith('build')) return dieBuild.includes(id) ? null : { commits: (buildCommits && buildCommits(id)) || [H('sha-' + id)], files_changed: [], commands_run: [{ command: 'bun test', output_tail: 'BUILDER-CLAIM all green' }], deviations: ['dev-' + id], notes: 'BUILDER-NOTES trust me' }
@@ -56,7 +61,7 @@ async function run({
       return Object.assign({ passed: pass, checks: [], unfinished_work: pass ? '' : 'fix ' + id, code_defect: !pass, summary: '', non_blocking_findings: findings(id, seen[id]), negative_controls: [{ row: 'y', result: 'red' }] }, verdictExtra(id, seen[id]))
     }
     if (label === 'completeness') return { missing: [], detail: '' }
-    if (label === 'gates') return { head_before: 'pre-gates', all_green: true, gates: [{ command: 'unit', passed: true, skipped: false, output_tail: '' }], failures_fixed: gatesCommits.length ? ['lint in a.ts'] : [], remaining_failures: [], commits: gatesCommits }
+    if (label === 'gates') return { head_before: 'pre-gates', all_green: gatesGreen, gates: [{ command: 'unit', passed: true, skipped: false, output_tail: '' }], failures_fixed: gatesCommits.length ? ['lint in a.ts'] : [], remaining_failures: [], commits: gatesCommits }
     if (label === 'docs') return { docs_impact: 'updated', justification: 'user docs', files: ['docs/x.md'] }
     if (label === 'verify docs') return { passed: true, checks: [], unfinished_work: '', code_defect: false, summary: '', non_blocking_findings: [] }
     throw new Error('unexpected label ' + label)
@@ -338,5 +343,123 @@ async function run({
   assert.match(p, /dev database is SHARED/)
   assert.match(p, /override them: \/tmp\/e2e\.log/)
   assert.ok(!/dev database is SHARED/.test((await run()).calls[0].prompt))
+}
+// logs and screenshots live OUTSIDE the worktree; servers die by process group, checked with ps [IS-19, IS-20]
+{
+  const p = (await run({ extra: { worktree: '/wt/1-x', scratchDir: '/scratch' } })).calls[0].prompt
+  assert.match(p, /logs under \/scratch\/1\/logs\/<port>\//)
+  assert.ok(!p.includes('/wt/1-x/.logs'), 'no log dir inside the worktree')
+  assert.match(p, /kill -- -<PGID>[^\n]*ps -eo pid,pgid,ppid,command/)
+}
+// user_visible turns on ONE view agent between build and gates; false skips it [VF-23]
+{
+  const off = await run()
+  assert.ok(!off.calls.some((c) => c.label.startsWith('view')))
+  assert.equal(off.res.view, null)
+  const on = await run({ specExtra: { user_visible: true, view_targets: ['settings / empty'] }, extra: { scratchDir: '/scratch' } })
+  const labels = on.calls.map((c) => c.label)
+  assert.equal(labels.filter((l) => l.startsWith('view')).length, 1)
+  assert.ok(labels.indexOf('view #1') > labels.lastIndexOf('completeness') && labels.indexOf('view #1') < labels.indexOf('gates'))
+  const vp = on.calls.find((c) => c.label === 'view #1').prompt
+  assert.match(vp, /BUILD NOTHING/)
+  assert.match(vp, /390x844 and at 1440x900/)
+  assert.match(vp, /settings \/ empty/)
+  assert.match(vp, /\/scratch\/1\/screenshots\/round-1\//)
+  assert.equal(on.res.status, 'verified')
+  assert.equal(on.res.metrics.stages.find((x) => x.stage === 'View').agents, 1)
+}
+// a visual defect THIS branch caused goes to one repair; still there after it, a human decides. Pre-existing is a side issue
+{
+  const branch = { cause: 'branch', severity: 'defect', kind: 'ux', finding: 'save button overlaps the footer at 390x844', screenshots: ['/s/after.png'], file: 'a.ts' }
+  const old = { cause: 'pre-existing', severity: 'doc-copy', kind: 'ux', finding: 'header label truncated', screenshots: ['/s/before.png'] }
+  const fixed = await run({ specExtra: { user_visible: true }, view: (n) => ({ screenshots: [], findings: n === 1 ? [branch, old] : [old], processes_left: 0 }) })
+  const rp = fixed.calls.find((c) => c.label === 'repair view #1')
+  assert.ok(rp && /save button overlaps the footer/.test(rp.prompt) && /Files you may touch: a\.ts\./.test(rp.prompt), 'repair is scoped to the task that owns a.ts')
+  assert.ok(fixed.calls.some((c) => c.label === 'view #2'))
+  assert.equal(fixed.res.status, 'verified')
+  assert.ok(fixed.res.commits.includes(H('fix-view1')))
+  assert.ok(fixed.res.findings['doc-copy'].some((f) => /header label truncated/.test(f.finding) && f.evidence.includes('/s/before.png')))
+  const stuck = await run({ specExtra: { user_visible: true }, view: () => ({ screenshots: [], findings: [branch], processes_left: 0 }) })
+  assert.equal(stuck.calls.filter((c) => c.label.startsWith('repair view')).length, 1, 'max one view repair')
+  assert.equal(stuck.res.status, 'decision_required')
+  assert.match(stuck.res.decision_required, /save button overlaps the footer/)
+  const hv = stuck.calls.find((c) => c.label === 'harvest')
+  assert.ok(!hv || !/save button overlaps/.test(hv.prompt), 'a branch defect is never harvested as a side issue')
+}
+// a privacy or security behaviour change stops at spec for the human, never ranked away; a human decision lets it through [SP-18]
+{
+  const row = { surface: 'record page while locked', before: 'page torn down', after: 'names stay under a translucent overlay', decision_ref: null }
+  const stop = await run({ specExtra: { privacy_security_change: true, privacy_security_rows: [row] } })
+  assert.equal(stop.res.status, 'decision_required')
+  assert.equal(stop.res.stage, 'spec')
+  assert.match(stop.res.decision_required, /names stay under a translucent overlay/)
+  assert.ok(!stop.calls.some((c) => c.label === 'plan'))
+  assert.match(stop.calls.find((c) => c.label === 'spec').prompt, /never a ranker's/)
+  const bare = await run({ specExtra: { privacy_security_change: true } })
+  assert.equal(bare.res.status, 'decision_required', 'a privacy change with no rows still stops')
+  const fake = await run({ specExtra: { privacy_security_change: true, privacy_security_rows: [Object.assign({}, row, { decision_ref: 3 })] }, extra: { decisions: ['unmount on lock'] } })
+  assert.equal(fake.res.status, 'decision_required', 'a decision_ref with no human decision behind it does not count')
+  const ok = await run({ specExtra: { privacy_security_change: true, privacy_security_rows: [Object.assign({}, row, { decision_ref: 0 })] }, extra: { decisions: ['unmount the page on lock'] } })
+  assert.equal(ok.res.status, 'verified')
+  assert.match(ok.calls.find((c) => c.label === 'verify T1 #1').prompt, /unmount the page on lock/)
+  // the verifier finds one the spec missed: the task stops, no repair
+  const v = await run({ verdictExtra: (id) => (id === 'T1' ? { privacy_security_change: 'Decrypted names now stay in the DOM while locked.' } : {}) })
+  const t1 = v.res.tasks.find((t) => t.id === 'T1')
+  assert.equal(t1.status, 'decision_required')
+  assert.ok(!v.calls.some((c) => c.label.startsWith('repair T1')))
+  assert.equal(v.res.status, 'decision_required')
+}
+// stale findings: true only until a later stage ran; dropped once that stage passed, kept when it did not [VF-32]
+{
+  const f = (id) => (id === 'T1' ? [{ severity: 'test-gap', finding: 'T1 uncommitted, acceptance pending', until_stage: 'gates' }, { severity: 'test-gap', finding: 'no test for the empty list' }] : [])
+  const green = await run({ findings: f })
+  assert.ok(!green.res.findings['test-gap'].some((x) => /acceptance pending/.test(x.finding)))
+  assert.ok(green.res.findings['test-gap'].some((x) => /empty list/.test(x.finding)))
+  assert.equal(green.res.metrics.superseded_findings, 1)
+  assert.ok(!/acceptance pending/.test(green.calls.find((c) => c.label === 'harvest').prompt))
+  const red = await run({ findings: f, gatesGreen: false })
+  assert.ok(red.res.findings['test-gap'].some((x) => /acceptance pending/.test(x.finding)), 'gates did not pass, so it is not stale')
+}
+// harvest: one agent after docs, fed by every stage; nothing to harvest, no agent [OR-27]
+{
+  const none = await run()
+  assert.ok(!none.calls.some((c) => c.label === 'harvest'))
+  assert.deepEqual(none.res.side_issues, [])
+  const f = (id) => (id === 'T2' ? [{ severity: 'follow-up', finding: 'export page has no empty state', file: 'export.ts' }] : [])
+  const { res, calls } = await run({ findings: f, docsImpact: 'docs/x.md', diagExtra: { side_findings: [{ severity: 'defect', finding: 'import silently drops rows with a blank date', file: 'import.ts' }] },
+    extra: { openIssues: [{ number: 41, title: 'Import silently drops rows with a blank date', labels: ['bug'] }] } })
+  const labels = calls.map((c) => c.label)
+  assert.equal(labels[labels.length - 1], 'harvest')
+  const hp = calls.find((c) => c.label === 'harvest').prompt
+  assert.ok(/export page has no empty state/.test(hp) && /blank date/.test(hp) && /#41 Import silently drops/.test(hp))
+  assert.deepEqual(res.side_issues, [])
+}
+// harvest dedupes against openIssues in code: a missed title match and an invented number are both corrected
+{
+  const drafts = [
+    { title: 'Import silently drops rows with a blank date', body: 'b', kind: 'bug', severity: 'wrong-state', evidence: ['import.ts:40'], duplicate_of: null, bundle: false },
+    { title: 'Export page has no empty state', body: 'b', kind: 'ux', severity: 'minor', evidence: ['export.ts:9'], duplicate_of: 999, bundle: false },
+    { title: 'Unproven claim', body: 'b', kind: 'bug', severity: 'minor', evidence: [], duplicate_of: null, bundle: true },
+  ]
+  const { res } = await run({ findings: () => [{ severity: 'follow-up', finding: 'x' }], harvest: () => ({ side_issues: drafts, dropped: [] }),
+    extra: { openIssues: [{ number: 41, title: 'Import silently drops rows with a blank date', labels: ['bug'] }] } })
+  assert.equal(res.side_issues.find((d) => /blank date/.test(d.title)).duplicate_of, 41)
+  assert.equal(res.side_issues.find((d) => /empty state/.test(d.title)).duplicate_of, null, 'not an open issue')
+  assert.ok(!res.side_issues.some((d) => d.title === 'Unproven claim'), 'no evidence, no draft')
+  assert.ok(res.side_issues.every((d) => d.body.startsWith('Found while resolving #1.')))
+}
+// severity decides: serious problems get their own issue, minor ones ONE bundle per run; identifiers scrubbed
+{
+  const d = (title, severity, bundle) => ({ title, body: `${title}: see MRN-12345`, kind: 'bug', severity, evidence: ['a.ts:1'], duplicate_of: null, bundle })
+  const drafts = [d('Session token kept after logout', 'security', true), d('Edits lost on tap outside', 'data-loss', true), d('Button 2px off', 'minor', false), d('Typo in footer', 'minor', true)]
+  const { res } = await run({ findings: () => [{ severity: 'follow-up', finding: 'x' }], harvest: () => ({ side_issues: drafts, dropped: [] }),
+    extra: { profile: { privacy: { identifier_patterns: ['MRN-\\d+'] }, labels: { 'needs-triage': 'triage-pending' } } } })
+  const sep = res.side_issues.filter((x) => !x.bundle).map((x) => x.title)
+  assert.deepEqual(sep.sort(), ['Edits lost on tap outside', 'Session token kept after logout'])
+  assert.ok(res.bundle_issue && /\(2\)$/.test(res.bundle_issue.title))
+  assert.ok(/Button 2px off/.test(res.bundle_issue.body) && /Typo in footer/.test(res.bundle_issue.body))
+  assert.ok(res.side_issues.every((x) => !/MRN-12345/.test(x.body) && /\[redacted\]/.test(x.body)))
+  assert.equal(res.side_issue_label, 'triage-pending')
+  assert.match(res.summary, /Side issues to file: 2 separate, 1 bundle of 2, 0 comments/)
 }
 console.log('workflow template: all dry-run checks passed')

@@ -14,15 +14,16 @@ Scope: **issue → verified branch.** Merging to the main line, pushing, tagging
 ## The loop
 
 ```
-pre-flight ─▶ size + announce ─▶ DIAGNOSE ─▶ SPEC ─▶ PLAN ─▶ BUILD ║ VERIFY ⟲ REPAIR ─▶ GATES ─▶ DOCS ─▶ STOP
- (questions                        rank,       root     real     parallel   fresh adversarial     fixed    only if   summary
-  that change                      probe,      cause,   code,    waves on   verifier per task,    list,    the spec  rendered
-  the build)                       measure     scope    units    disjoint   repair 1 tier up      its      says so   from data
-                                                                 files      (max 3 rounds)        commits
-                                                                                                  verified
+pre-flight ─▶ size + announce ─▶ DIAGNOSE ─▶ SPEC ─▶ PLAN ─▶ BUILD ║ VERIFY ⟲ REPAIR ─▶ VIEW ─▶ GATES ─▶ DOCS ─▶ HARVEST ─▶ STOP
+(questions                       rank,       root    real    parallel waves, fresh      UI:     fixed    only if side-issue summary
+that change                      probe,      cause,  code,   adversarial verifier       shots   list;    spec    drafts for from data
+the build)                       measure     scope   units   per task, repair 1         before, commits  says so the main
+                                                             tier up (max 3)            after   verified         loop
 ```
 
-Every stage is a separate agent. Its output passes VERBATIM into the next stage's prompt [OR-1]. The run happens in the background so the conversation stays free [OR-2]. Agents inside the run never stop to ask questions. They rank the real alternatives, let evidence decide, and record what they decided. Questions for the human belong in pre-flight and at the final yes [OR-16].
+Every stage is a separate agent. Its output passes VERBATIM into the next stage's prompt [OR-1]. The run happens in the background so the conversation stays free [OR-2]. Agents inside the run never stop to ask questions. They rank the real alternatives, let evidence decide, and record what they decided. Questions for the human belong in pre-flight and at the final yes [OR-16]. Two kinds of question always stop the run for the human instead: a shared component's changed flow nobody can vouch for [SP-17], and any change to privacy or security behaviour, meaning what shows when the app is locked or logged out, or how long data lives [SP-18]. Relaunch with the human's answers in `decisions`.
+
+VIEW runs only when the spec sets `user_visible`. It screenshots before and after on test data, judges them against `docs.design` and the ux pack, and builds nothing; a defect this branch caused gets one repair, then a human decides [VF-23]. HARVEST turns every stage's side findings into issue drafts for Step 4 [OR-27].
 
 ## The laws
 
@@ -40,6 +41,8 @@ These are non-negotiable. Inject them into every agent prompt as numbered laws, 
 10. **No sensitive identifiers anywhere.** Keep names, record numbers, birth dates and customer PII out of issues, commits, docs and fixtures. Agents get no production access [PS-1, PS-5].
 11. **Only do the task you were given.** Put adjacent cleanup into follow-up issues [BD-2, SP-5].
 12. **Never claim fixed, deployed or green from indirect evidence** [CM-3, VF-10].
+
+Law 9 binds agents. Filing side issues to the project's own tracker (Step 4) is a main-loop action, done after the audit and listed in the summary, never by an agent inside a run [OR-27].
 
 Add the project's own laws from its profile (for example, "migrations are additive only" [DI-25] or "no raw colours outside the design tokens" [VF-25]).
 
@@ -60,7 +63,7 @@ Do this inline, before launching anything. It is cheap, and it prevents the most
 4. **Check feasibility** of any new dependency, data source or token before you spec on top of it, on every platform the product targets [PF-7, PF-8, PF-9, PF-10, PF-12].
 5. **Ask only the questions that change what gets built.** Ask them one at a time, each with your recommended answer. For everything else, start, and write your assumptions into the spec [PF-3]. The question that matters most is usually the one that separates the reported symptom from a neighbouring one: which screen, which flow, which data [DG-15]. A fact only the reporter has moves the issue to `needs-info` with the question for them. It never becomes an assumption.
 6. **A destructive or data-loss-sensitive request** never goes straight to a build. It gets a decision menu first [SP-11]. So does a shared component's changed default whose effect on some caller's flow nobody knows [SP-17].
-7. **Check shared state against runs already going.** With `env.shared_db: true`, warn before a second run that touches DB functions, and run them one after the other. Each run overrides the runner's `env.fixed_paths` with its own log directory [IS-17, IS-18].
+7. **Check shared state against runs already going.** With `env.shared_db: true`, warn before a second run that touches DB functions, and run them one after the other. Each run overrides the runner's `env.fixed_paths` with its own log directory [IS-17, IS-18]. Logs and screenshots go under `<scratch>/<issue>/logs`, outside the worktree; if a log directory sits inside one, `git check-ignore` must cover it before launch [IS-19].
 
 ## Step 2: size it, budget it, announce it
 
@@ -68,7 +71,7 @@ Do this inline, before launching anything. It is cheap, and it prevents the most
 |---|---|---|
 | trivial | decided from the actual diff: no code path changes (copy, typos, comments, config with no behaviour change) | no run. Edit inline, run the gates, write a one-line summary |
 | small | one cause, 1 to 2 files, no UI flow change | 1 diagnoser, 1 spec+plan agent, 1 task and its verifier, gates. Symptom check only without a measured repro; docs only if the spec says so |
-| medium | one cause, several files or a UI flow | 2 diagnosers on different angles, 3 to 6 tasks, a verifier per task |
+| medium | one cause, several files or a UI flow | 2 diagnosers on different angles, 3 to 6 tasks, a verifier per task, +1 VIEW when user-visible, +1 harvest when there are findings |
 | large | multi-slice feature or several causes | split into sub-issues first and run the smallest first [PL-6]. Cap each run at about 9 tasks [PL-7] |
 
 Trivial is never guessed up front. Make the edit, read `git diff`, and if it touches any code path, revert it and run it as small. Anything that changes behaviour keeps diagnosis and the negative control.
@@ -81,7 +84,7 @@ Respect the human's declared caps (for example "max 3 runs at once"). Count the 
 
 Pick the engine your harness has:
 
-- **Workflow tool available** (Claude Code): stamp a per-issue copy of `templates/workflow.js` with `scripts/stamp-workflow.sh <issue-id>`, so that the run's name carries the issue id [OR-3, OR-4]. Then launch it with the args described at the top of the template. Workflow scripts cannot read files, so you read the profile, merge it over the defaults in `references/project-profile.md`, and pass it in with the tier table, the domain packs and the skill's path [OR-6].
+- **Workflow tool available** (Claude Code): stamp a per-issue copy of `templates/workflow.js` with `scripts/stamp-workflow.sh <issue-id>`, so that the run's name carries the issue id [OR-3, OR-4]. Then launch it with the args described at the top of the template, including `scratchDir` and `openIssues` (open issues' number, title and labels, fetched first with the tracker CLI, for example `gh issue list --state open --limit 500 --json number,title,labels`; skip it when `issues.auto_file` is false). Workflow scripts cannot read files, so you read the profile, merge it over the defaults in `references/project-profile.md`, and pass it in with the tier table, the domain packs and the skill's path [OR-6].
 - **Agent/Task subagents only**: follow `templates/subagent-fallback.md`. It is the same loop, driven by you.
 - **No subagents** (another agent harness, or a plain session): run the stages sequentially yourself, as described in `references/process.md`. Run the verifier pass in a fresh context if you can get one. If you cannot, switch hats explicitly and assume your own work is wrong.
 
@@ -94,7 +97,8 @@ Stage detail lives in these files, which you should read when that stage runs or
 | any, entry/exit criteria | `references/process.md` |
 | diagnose | `references/diagnosis.md` |
 | spec, plan | `references/spec-and-plan.md`, `templates/spec.md`, `templates/plan.md` |
-| build, verify, repair | `references/verification.md` |
+| build, verify, repair, view | `references/verification.md` |
+| harvest, filing side issues | `references/process.md` §9b |
 | gates | `references/tests-and-gates.md` |
 | worktrees, ports, env | `references/isolation.md` |
 | docs | `references/docs.md` |
@@ -122,9 +126,10 @@ Subagents misreport, and runtimes delete files. The run returns a compact result
 2. Run `git log <base>..HEAD` and check that every commit carries the required trailers. An unattributed commit counts as rogue until it is explained [GR-4].
 3. Cross-check the plan's unit list against the tree. A planned unit with no implementation is a STOP, so dispatch a completion agent for exactly those units [VF-13, OR-10].
 4. Re-run the gates yourself, independently of the run's gates agent, from the profile's gate list. Save the full output and grep all of it for `failed` [VF-10, TG-2]. Checks recorded as `ci_only` need a PR or CI context and are not local gates. If one sits in the gate list and fails for that reason, move it to `ci_only` in the profile rather than calling the run red [TG-34]. `gates_commits_verified: false` means the gates agent's own commits failed review: treat the gates as red until you have read them.
-5. Confirm that every server the run started is gone and the developer's ports are untouched [IS-8].
+5. Confirm that every server the run started is gone, by process group and `ps`, not only `lsof`, and that the developer's ports are untouched [IS-8, IS-20].
 6. Re-triage the merged findings list, defects and test gaps first [VF-31]. "Non-blocking" is the verifier's opinion, not a verdict: re-read each finding against the code and promote any that a user could hit (a page stuck loading, a raw 500, misleading copy). Fix real defects before handoff, and file follow-ups as issues [VF-11].
-7. Append one line to `.claude/resolve-issue-runs.jsonl`: date, issue, size, status, wall-clock start and end, the run's `metrics` (stages, repairs, verifier rejections, gates commits), finding counts by severity, and how many findings you promoted at this audit. Without it, nobody can tell whether a tier or a stage change helped [CO-2].
+7. **File the side issues** the run drafted (`side_issues`, `bundle_issue`) unless the profile sets `issues.auto_file: false` [OR-27]. Re-check each draft against the code first and drop any that is not true or is this branch's own defect (that one goes back to repair). For a `duplicate_of` draft, comment on that issue with its body. File each serious draft (`bundle: false`) as its own issue, and the minor ones as the ONE bundle issue, all labelled `side_issue_label` (the profile's needs-triage label). Scan every body for identifiers before it leaves [PS-2]. List the filed numbers in the summary.
+8. Append one line to `.claude/resolve-issue-runs.jsonl`: date, issue, size, status, wall-clock start and end, the run's `metrics` (stages, repairs, verifier rejections, gates commits), finding counts by severity, how many findings you promoted at this audit, and the side issues filed. Without it, nobody can tell whether a tier or a stage change helped [CO-2].
 
 ## Step 5: hand off and stop
 

@@ -35,6 +35,8 @@ Ranking: <top option p=…, runner-up p=…>; <overruled by evidence: … | not 
 What changes for the user: <one or two plain sentences>.
 Gates: typecheck ✓ lint ✓ unit 412/412 ✓ e2e skipped (shared DB; run at merge) build ✓ docs ✓ (PR-only check: ci_only)
 Findings: defects <n, fixed or open>; test gaps <n>; doc/copy <n>; follow-ups filed <n>
+View: <n> screenshot sets in <scratch>/<issue>/screenshots; branch defects open <n> (user-visible changes only)
+Side issues filed: #… #… (separate), #… (bundle of <n>), comments on #… | not filed (auto_file off)
 Commits (git log <base>..HEAD):
   abc1234 <subject>
   def5678 <subject>
@@ -45,4 +47,5 @@ Next: your yes to merge; then a separate yes to push.
 
 ## Board and tracker
 
+- **Side issues are filed by the main loop, automatically, after the audit** [OR-27]: re-checked against the code, duplicates as comments, serious ones separately, minor ones as one bundle, with the needs-triage label. `issues.auto_file: false` turns it off; the drafts then appear in the summary for the human.
 - **Moving board cards is the agent's job**: "in progress" at launch, "staged" when pushed. The human files issues, verifies and approves pushes [CM-12].

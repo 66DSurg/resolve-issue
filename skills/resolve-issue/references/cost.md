@@ -16,6 +16,8 @@ Keep the tier table in the profile (`tiers:`). It is the single source of truth,
 | repair | one tier above build | high | the task already failed once on the cheaper tier [VF-5] |
 | gates | mid | medium or higher | it commits, so never low [TG-32] |
 | docs | mid | medium | prose within fixed rules, and a verifier checks the claims |
+| view | verify tier (strongest) | high | a judgment on screenshots; it builds nothing |
+| harvest | mid | medium | drafts only; the main loop re-checks every draft before filing [OR-27] |
 
 `model: null` (or `inherit`) means "use the session's model".
 

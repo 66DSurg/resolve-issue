@@ -36,7 +36,8 @@ for p in <profile.env.link>; do ln -s "<main_checkout>/$p" "$p"; done
 - **The developer's default dev ports are theirs.** Agents use assigned spare ports with strict-port flags [IS-3].
 - **Check what owns a port before e2e** with `lsof -nP -iTCP:<port> -sTCP:LISTEN`. Kill only stray processes whose cwd is a finished worktree, never the human's server [IS-3]. A verifier once rejected a task four times because a stray server was running code 111 commits behind.
 - **Point every URL the tests generate at THIS run's port** [IS-5]. That includes the sign-in helper, the magic-link and redirect base, the app origin, and the WebAuthn origin and RP id. One forgotten default sends the tests through someone else's server.
-- **Kill every server you started** before finishing [IS-3].
+- **Kill every server you started** before finishing [IS-3]. **Kill by process group, then check with `ps`** [IS-20]. Start each server in its own group (`setsid <cmd>`, or record `ps -o pgid= <pid>`), stop it with `kill -- -<pgid>`, and prove with `ps -eo pid,pgid,ppid,command` that nothing survives. `lsof` sees only listeners: an orphaned dev server re-parented to PID 1, and its bundler child, survived a port-only cleanup and broke the next run.
+- **Logs and screenshots live outside the worktree**, under `<scratch>/<issue>/logs` and `.../screenshots` (the run's `scratchDir`) [IS-19]. A log directory that must sit inside a worktree is covered by `.gitignore` first (`git check-ignore -q <dir>` in pre-flight). An untracked, unignored `.logs/` once sat one `git add -A` away from a commit.
 
 ## 3. Isolated e2e runner
 
@@ -60,7 +61,7 @@ trap cleanup EXIT
 - **When a missing optional service config fails many specs at once, check the environment first** [IS-10]. It is usually a false alarm about the code.
 - **Worktrees sharing one local DB can show false migrate failures.** Judge migrations on a clean database applied in order [IS-11].
 - **A shared dev DB and database functions do not mix across runs** [IS-17]. When the tests apply functions, the last run to apply one wins, so each run tests the other's code. Give each run its own schema or database name. If the project cannot, record `env.shared_db: true` in the profile; pre-flight then warns before launching a second run that touches DB functions while one is going, and the two run one after the other.
-- **Fixed paths in the test runner are shared state too** [IS-18]. Discovery and pre-flight grep the runner and its scripts for fixed log files, temp dirs and sockets, and record them as `env.fixed_paths`. Each run writes logs under `<worktree>/.logs/<port>/` and overrides those paths. Two runs once read each other's logs.
+- **Fixed paths in the test runner are shared state too** [IS-18]. Discovery and pre-flight grep the runner and its scripts for fixed log files, temp dirs and sockets, and record them as `env.fixed_paths`. Each run writes logs under `<scratch>/<issue>/logs/<port>/`, outside the worktree, and overrides those paths [IS-19]. Two runs once read each other's logs.
 - **Do not run a test suite while another agent rebuilds the same frontend** [IS-12].
 - **Keep large media and content production out of the product repo**, so clones, CI, worktrees and agents stay fast [IS-13].
 
@@ -70,6 +71,7 @@ End every isolated run with this report [IS-8]:
 
 ```
 listeners on <spare ports>: 0
+processes of this run (ps, by process group): 0
 default dev ports: untouched (owner pids unchanged)
 git status --porcelain (tracked): clean
 temp configs removed: yes

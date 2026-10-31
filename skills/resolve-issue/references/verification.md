@@ -9,7 +9,7 @@ Implementers' self-reports are optimistic, so every task gets a fresh adversaria
 3. Verifier prompt and rubric
 4. Negative controls
 5. Verdict schema and repair loop
-6. UI acceptance
+6. UI acceptance and the VIEW lens
 7. Data, races, experiments
 8. Deploy and environment checks
 9. Verifying the verifiers
@@ -76,6 +76,7 @@ Checklist. Each item exists because a verifier once missed that class of defect 
 12. A gate is checked in both directions: it does not leak onto routes it should not cover, AND it covers every route it should [VF-12].
 13. None of the build pitfalls in section 2 appear in the diff.
 14. Each test drives the interface it names. A test that imports internals (private helpers, module internals no caller uses) is a `test-gap` finding [DG-14].
+15. **Privacy and security behaviour.** Does the diff change what is on screen or in the DOM when the app is locked or logged out, or how long data lives? Any such change that no human-decided spec row covers goes in `privacy_security_change`, and the task stops as `decision_required`, with no repair [SP-18].
 
 ## 4. Negative controls
 
@@ -107,6 +108,8 @@ Checklist. Each item exists because a verifier once missed that class of defect 
 
 Every non-blocking finding carries a severity: `defect` (wrong behaviour a user could hit, wrong persisted state, or a security or eligibility hole in this branch's code; never filed as a follow-up), `test-gap`, `doc-copy` (wrong or misleading text), `follow-up` (real but out of scope) or `bookkeeping`. The run merges all verifiers' findings into one deduped list, keeping the most severe tag on a duplicate, and the summary lists defects and test gaps first [VF-31].
 
+**Stale findings are dropped.** A finding that is true only until a later stage runs ("acceptance pending", "not yet committed") carries `until_stage`; the merge drops it once that stage passed and counts it in `metrics.superseded_findings` [VF-32].
+
 **A pass that carries a `defect` finding in the task's own files is a rejection.** The run turns it into `unfinished_work` and sends it to repair, so a defect never rides along on a green verdict [VF-11].
 
 `code_defect` is true only for real logic defects, not bookkeeping such as a missing trailer or an unticked box. Keeping the two apart keeps the repair-rate metric honest [VF-4, CO-2].
@@ -131,7 +134,7 @@ Every non-blocking finding carries a severity: `defect` (wrong behaviour a user 
 
 **After any background or multi-agent run**, run `git status` and `git ls-files -d`. Restore unexpected deletions without touching new work, re-run the gates, and commit explicit paths [VF-15].
 
-## 6. UI acceptance
+## 6. UI acceptance and the VIEW lens
 
 - **Drive the real page** [VF-7]. Seed the user's data shape, click the real control, and assert on the rendered DOM. Every UI state must render something visible [UX-4]. Two dedup fixes had green gates while production showed a blank section after the click.
 - **Use the reporter's real data shape**, anonymised, as the acceptance fixture [VF-8].
@@ -139,6 +142,11 @@ Every non-blocking finding carries a severity: `defect` (wrong behaviour a user 
 - **Take screenshots at mobile and desktop widths, before and after the change** [VF-23]. Bugs are often viewport-specific.
 - **When test doubles cannot reproduce a real-device or real-vendor bug**, for example a virtual authenticator or a mocked SDK, say the fix is pending real-device verification [VF-9].
 - **Render diagrams and visual docs in a real browser** to check that the diagram renders, labels meet a minimum size, and dialogs open, close on Escape and return focus [VF-27].
+- **The VIEW lens** runs when the spec sets `user_visible: true`: one agent, after the build tasks verify and before the gates [VF-23]. It builds nothing.
+  - It starts the app on the run's ports with test data only, screenshots every `view_targets` screen before (the base commit, in a control worktree with a real install [IS-16]) and after (the run's worktree), at 390×844 and 1440×900, plus the states the spec names: locked, loading, empty, error.
+  - It judges the after shots against the profile's `docs.design` and `references/packs/ux.md`, comparing them with the before shots, and returns findings with `cause` (branch or pre-existing), a severity, a kind and the screenshot paths.
+  - A `defect` the branch caused goes to repair like a verifier rejection, one round only. Still there after it, the run ends `decision_required` with the shots. A pre-existing finding is never repaired here: it flows to the harvest as a side issue [OR-27].
+  - Screenshots go under `<scratch>/<issue>/screenshots`, outside the worktree, and are never committed [IS-19]. Its servers stop by process group, proved with `ps` [IS-20].
 - **Check generated links** (redirect and base URLs) point at a host the user can reach before handing one over. Verify with a dedicated test account, so verification does not use up the user's one-time tokens [VF-19].
 
 ## 7. Data, races, experiments

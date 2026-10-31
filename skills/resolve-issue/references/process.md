@@ -12,7 +12,9 @@ This file gives the entry criteria, work, output and exit criteria for every sta
 6. Stage 4: build
 7. Stage 5: verify and repair
 8. Stage 6: gates
+8b. Stage 6b: view (user-visible changes only)
 9. Stage 7: docs
+9b. Stage 7b: harvest
 10. Stage 8: summary and stop
 11. Automation around the loop (bots, triage, queue)
 
@@ -48,7 +50,7 @@ This file gives the entry criteria, work, output and exit criteria for every sta
 
 **Structured, compact returns.** Every run returns its result as data [OR-18]: status, root cause, a gates table, the commit list, per-task status and unfinished work, the merged findings by severity, and the follow-up issues to file. Keep it compact and capped (about 20 KB). Large per-stage outputs (diagnoses, build reports, verdicts, gate logs) stay in the run journal and in files, referenced by path [OR-26]. That data feeds the summary, the post-run audit and the repair-rate metric [CO-2].
 
-**One findings list.** The run merges every verifier's non-blocking findings into one deduped list. Each finding carries a severity (defect, test-gap, doc-copy, follow-up, bookkeeping), and the most severe tag wins on a duplicate. The summary and the post-run audit work from that list, defects and test gaps first [VF-31].
+**One findings list.** The run merges every stage's non-blocking findings into one deduped list, and drops a finding whose condition a later stage settled once that stage passed [VF-32]. Each finding carries a severity (defect, test-gap, doc-copy, follow-up, bookkeeping), and the most severe tag wins on a duplicate. The summary and the post-run audit work from that list, defects and test gaps first [VF-31].
 
 **Build in parallel, release serially.** The version and changelog are singletons. Parallel runs end in one integrated release, done in the main loop, and each release re-reads the current version fresh [OR-15, GR-9].
 
@@ -115,12 +117,27 @@ Work: follow `references/tests-and-gates.md`. Run exactly the gate list built fr
 Then, if it committed anything: one fresh verifier over `git diff <head_before>..HEAD`, returned as `gates_commits_verified`. Nobody else reviews those commits.
 Exit: a structured gates result. Skipped gates are reported as skipped [TG-10]. Checks that need a PR or CI context are listed as `ci_only`, not run [TG-34].
 
+## 8b. Stage 6b: view
+
+Entry: every task verified or reported, and the spec says `user_visible: true`. It runs before the gates, so a repair it triggers is gated too.
+Agents: 1 VIEW agent at the verify tier. It builds nothing. A branch defect adds 1 repair (one tier up) and 1 re-view.
+Work: follow `references/verification.md` §6. Before shots from a control worktree at the base commit, after shots from the run's worktree, both on test data and this run's ports, at 390×844 and 1440×900, for every `view_targets` screen and the states the spec names (locked, loading, empty, error). Judge them against `docs.design` and the ux pack. Screenshots go under `<scratch>/<issue>/screenshots`, outside the worktree [IS-19]. Servers stop by process group, proved with `ps` [IS-20].
+Exit: no branch defect, or one repair round and then `decision_required`. Pre-existing findings flow into the merged list and on to the harvest.
+
 ## 9. Stage 7: docs
 
 Entry: the gates result and the list of changed files, when the spec's docs impact is not "none". When it is "none", the spec's justification is the docs decision and no agent runs [DC-1].
 Agents: 1, mid tier. A verifier checks its claims [VF-6].
 Work: follow `references/docs.md`. Make the docs-impact decision, update the user and developer docs, put the changelog entry under Unreleased, and update the indexes [DC-1, DC-4].
 Exit: either docs are updated or "no docs needed" is recorded with a real justification.
+
+## 9b. Stage 7b: harvest
+
+Entry: the merged findings list from every stage (diagnosis `side_findings`, verifiers, VIEW, gates, docs), with stale findings already dropped [VF-32], plus the spec's out-of-scope follow-ups, the gates' remaining failures, `args.openIssues` and the repo's `.out-of-scope/`. No findings, no agent.
+Agents: 1, mid tier. It drafts and never files.
+Work: re-read each item against the code at HEAD; drop branch defects (those must be repaired, and the audit sees the drop), rejected or out-of-scope items, and anything no longer true. Draft one issue per distinct problem: `{title, body, kind, severity, evidence, duplicate_of, bundle}` [OR-27].
+The run then checks the drafts in code: `duplicate_of` must name an open issue, and a title match the agent missed sets it; severity decides `bundle` (privacy, security, data loss, a broken flow and wrong persisted state are separate; the rest is one bundle issue per run); a draft with no evidence is dropped; every body says "Found while resolving #N"; the profile's `privacy.identifier_patterns` are scrubbed.
+Exit: `side_issues`, `bundle_issue` and `side_issue_label` in the result. The main loop files them after the audit (SKILL.md Step 4), unless `issues.auto_file: false`.
 
 ## 10. Stage 8: summary and stop
 
