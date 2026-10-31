@@ -40,27 +40,29 @@ The first time it runs in a repo, the skill discovers your real commands, ports,
 After that, each issue goes like this:
 
 1. **Pre-flight.** The skill asks only the questions that change what gets built, one at a time, each with a recommended answer. Everything else becomes a written assumption in the spec.
-2. **Size and announce.** For example: "Medium: 2 diagnosers, ~5 build tasks, 5 verifiers. Running in the background." It respects your concurrency caps.
+2. **Size and announce.** For example: "Medium: 2 diagnosers, ~5 build tasks, 5 verifiers, in the background. Go?" A medium or large run waits for your yes; a small one starts. It respects your concurrency caps.
 3. **Run.** The run happens in its own git worktree, on its own branch and spare ports. The spec and plan land in `docs/issues/<date>-<slug>/` (configurable, or `none` for scratch).
 4. **Audit.** The skill checks `git status`, `git ls-files -d` and the commit trailers, re-runs the gates itself, and confirms its servers are gone.
-5. **Summary.** You get a short, phone-readable summary covering the root cause and how it was confirmed, what changes for the user, the gates, the commits, and what to check by hand.
+5. **Summary.** The run renders, from its own data, a short, phone-readable summary covering the root cause and how it was confirmed, what changes for the user, the gates, the commits, and what to check by hand.
 
 ## How it works
 
 ```
-pre-flight → size → DIAGNOSE → SPEC → PLAN → BUILD ║ VERIFY ⟲ REPAIR → GATES → DOCS → SUMMARY → STOP
+pre-flight → size → DIAGNOSE → SPEC → PLAN → BUILD ║ VERIFY ⟲ REPAIR → GATES → DOCS → STOP
 ```
 
 | Stage | Agents | Tier |
 |---|---|---|
 | diagnose | 1 (small) or 2 on different angles | strongest, high effort |
-| spec, plan | 1 each | strongest |
-| symptom check | 1 ranking: "does this plan fix the reported symptom or a neighbour?" | strongest |
+| spec, plan | 1 each (one combined agent for a small issue) | strongest |
+| symptom check | 1 ranking: "does this plan fix the reported symptom or a neighbour?", only when the repro was not measured | strongest |
 | build | 1 per task, waves on disjoint files | mid |
 | verify | 1 fresh adversarial verifier per task, with a negative control | strongest, never cheapened |
 | repair | up to 3 rounds per task | one tier above build |
-| gates | 1, full suite, whole-log failure grep, known-flaky SET | mid, medium or higher |
-| docs | 1, plus a claim verifier | mid |
+| gates | 1, fixed command list, whole-log failure grep, known-flaky SET; 1 fresh verifier over any commits it makes | mid, medium or higher |
+| docs | 1, plus a claim verifier, only when the spec says docs are affected | mid |
+
+A trivial change (no code path touched, judged from the diff) runs no agents. A small issue runs about 6. The summary is rendered from the run's data, not written by a model. `stopAfter: 'diagnose' | 'plan'` and `resumeFrom: 'build'` add an optional human checkpoint.
 
 In Claude Code with the Workflow tool, `scripts/stamp-workflow.sh <id>` makes a per-issue copy of [`templates/workflow.js`](templates/workflow.js). Without it, the same loop runs through Agent subagents.
 

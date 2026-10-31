@@ -26,7 +26,7 @@ The human may be reading on a phone, between other work, with no time for transc
 
 ## The end-of-run summary
 
-Use this shape. Keep it short enough to read on a phone [CM-7]. Findings come from the run's merged list, defects and test gaps first, never bookkeeping first [VF-31].
+The run renders this from its own data, with no model in the loop, and the main loop corrects it after the audit. Keep it short enough to read on a phone [CM-7]. Findings come from the run's merged list, defects and test gaps first, never bookkeeping first [VF-31].
 
 ```
 <issue id> <title>: <verified | partially verified | failed>

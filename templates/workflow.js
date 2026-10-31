@@ -415,7 +415,7 @@ Checklist (record every item in checks):
    The assertions must fail on the bad outcome (not merely "not throw"), and the component under test must not be mocked.
 9. The reported symptom (${A.reportPath}) is resolved for the reporter's data shape; reason explicitly about those rows.
 10. Claims in docs and comments are true. 11. The feature is reachable from the UI. 12. Any gate is correct in both directions (no leak, full coverage).
-13. None of the build pitfalls in references/verification.md section 2 (stripped fields, orphaned triggers, cache-masked indicators, unhandled promise chains, route order, effect loops, silent not_configured, hardcoded formats, and the rest).
+13. None of the build pitfalls in ${SKILL}/references/verification.md section 2 (stripped fields, orphaned triggers, cache-masked indicators, unhandled promise chains, route order, effect loops, silent not_configured, hardcoded formats, and the rest).
 14. Each test drives the interface it names. A test that imports internals (private helpers, module internals no caller uses) is a test-gap finding.
 Kill any server you start. code_defect=true ONLY for real logic defects, not bookkeeping. unfinished_work must name files and symbols precisely.
 Put everything else you noticed in non_blocking_findings, each with a severity (defect | test-gap | doc-copy | follow-up | bookkeeping) and the file it is about. Tag honestly: a reachable wrong behaviour (a page stuck loading, a raw 500, misleading copy) is a defect or doc-copy even if it is outside this task [VF-31, VF-11].

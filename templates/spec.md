@@ -2,6 +2,7 @@
 
 - Issue: <link>. Attempt: <N> on this surface (earlier: <links>)
 - Report: <path to verbatim report> · Screenshots: <paths, kept local>
+- Agent brief: <path to the saved "## Agent Brief" comment | none>. Its acceptance criteria go under Tests and its out-of-scope list under Scope.
 - Size: <small | medium | large> · Date: <YYYY-MM-DD>
 
 ## Symptom (verbatim)
@@ -36,6 +37,10 @@ If no diagnosed mechanism produces the symptom on the reported data, say so here
 
 <"absent stamp = adopt, never wipe">. Catastrophic failure mode: <…>. Its tests are the gate.
 
+## What changes for the user
+
+<one or two plain sentences; the run's summary quotes this line>
+
 ## User-facing copy (exact)
 
 | Where | Text |
@@ -43,8 +48,10 @@ If no diagnosed mechanism produces the symptom on the reported data, say so here
 
 ## Tests
 
-- Regression (fails before the fix): <name, file>. Negative control: <how the verifier will make it fail>
-- Acceptance on the reporter's data shape (anonymised): <fixture>
+Each test names the interface it drives (page, route, CLI, public function), never an internal helper.
+
+- Regression = the diagnosis reproduction, at the highest level that still reproduces the reported symptom; it fails before the fix: <name, file, interface>. Negative control: <how the verifier will make it fail>
+- Acceptance on the reporter's data shape (anonymised): <fixture, interface>
 - UI: real page, mobile + desktop screenshots: <yes / n/a>
 
 ## Scope
@@ -60,7 +67,7 @@ If no diagnosed mechanism produces the symptom on the reported data, say so here
 
 ## Docs impact
 
-<updated: which files | none: real justification>
+<the files to update | none: real justification>. "none" means no docs agent runs, so the justification has to hold.
 
 ## Risks
 

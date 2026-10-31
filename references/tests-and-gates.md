@@ -1,6 +1,6 @@
 # Tests and gates
 
-The gates stage runs the project's full gate list from the profile until it is green, fixing and committing as it goes, and reports exactly what passed, failed and was skipped [TG-6]. It can commit, so give it at least medium effort and a model that follows instructions reliably [TG-32, CO-3].
+The gates stage runs exactly the gate list built from the profile, in order, and reports what passed, failed and was skipped [TG-6]. It may fix only failures it can tie to files this branch changed, one commit per fix, and a fresh verifier then reviews those commits. Failures it cannot tie to the branch go in `remaining_failures`, unchanged. The main loop's own re-run of the gates (SKILL.md Step 4) stays the authoritative one [VF-10]. It can commit, so give it at least medium effort and a model that follows instructions reliably [TG-32, CO-3].
 
 ## Contents
 

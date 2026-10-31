@@ -128,8 +128,11 @@ If evidence contradicts the ranking, evidence wins: say so.
   "open_questions": ["... and what would settle it"],
   "distinguishing_question": "the one question to ask the reporter, or null",
   "decision_required": null,
+  "packs": ["names of domain packs whose trigger this issue meets"],
   "confidence": "high|medium|low"
 }
 ```
+
+`evidence` holds measured values only. When every diagnosis is high-confidence with measured evidence, the run skips the symptom check, so never pad it with reasoning [DG-8]. `packs` switches on the matching files in `references/packs/` for the rest of the run.
 
 `decision_required` is a menu of options when the fix is destructive or loses data. For each option it says what survives and what is lost, and the run stops so the human can choose [SP-11].

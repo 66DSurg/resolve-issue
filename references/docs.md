@@ -1,6 +1,6 @@
 # Docs
 
-Docs are part of done. The docs stage runs only when the change has docs impact, but the docs-impact DECISION is made for every change [DC-1].
+Docs are part of done. The docs-impact DECISION is made for every change, in the spec [DC-1]. The docs stage runs only when that decision is not "none", so a "none" needs a justification that holds.
 
 ## The docs stage
 

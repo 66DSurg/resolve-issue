@@ -2,7 +2,7 @@
 
 Spec: <path>. Base: <branch @ sha>. Worktree: <path>. Ports: <backend>/<frontend>.
 
-Rules for this plan: write ACTUAL code and exact signatures. No "TBD", no "add appropriate handling", no "similar to Task N". Use 3 to 9 tasks. Tasks in the same wave touch disjoint files. Order: root fix → diagnostics and guards → docs.
+Rules for this plan: write ACTUAL code and exact signatures. No "TBD", no "add appropriate handling", no "similar to Task N". Use 1 task for small, 3 to 9 for medium. Each task is a vertical slice that delivers observable behaviour through a real interface, root fix first. Use file-disjointness only to schedule waves: tasks that share a file never run at once. Docs belong to the docs stage, not to a task. Test-first steps are mandatory for the root-fix task; other tasks add tests where they change behaviour. Tests drive the interface they name and prefer real collaborators to mocks.
 
 ## Waves
 
@@ -18,7 +18,7 @@ Rules for this plan: write ACTUAL code and exact signatures. No "TBD", no "add a
 - Laws: <numbers from the spec>
 
 Steps:
-- [ ] Write the failing test in `<test path>`:
+- [ ] (root-fix task) Write the failing test in `<test path>`, driving `<interface: page | route | CLI | public function>`. For the root fix this is the diagnosis reproduction:
   ```ts
   // exact test code
   ```

@@ -36,7 +36,7 @@ Each of these shipped at least once. The builder avoids them, and the verifier g
 | Validators that strip unknown fields drop a new field silently | When you add a field, grep every write path and every validator | [BD-3] |
 | A refactor removes a trigger and the side effect is orphaned | Wire the replacement explicitly and test the downstream effect | [BD-4] |
 | A warning indicator never renders | Never gate an indicator on a field a cache can fill | [BD-5] |
-| A new export breaks many test files | Update every mock of that module across all test files | [BD-6] |
+| Mocked modules break when they gain an export, and mocks hide real behaviour | Prefer real collaborators. Where a module is mocked, update every mock of it when you add an export | [BD-6] |
 | A reused page shows the previous record's data | Re-read every derived or decrypted field when the route param changes | [BD-7] |
 | A promise chain fails silently | Give every `void promise.then(...)` a rejection handler | [BD-8] |
 | A literal route never matches | Check registration order. A parameterised route registered first swallows the literal | [BD-9] |
@@ -56,6 +56,8 @@ Every verifier is FRESH (it shares no context with the builder), uses the strong
 
 > You did not write this. Assume it is wrong until your own commands prove otherwise. Never trust the implementer's report. Fix nothing. If you are unsure, fail. The authority order is mockup > spec > plan.
 
+The verifier gets the commit SHAs, the task, its acceptance criteria and the builder's declared deviations. It never gets the builder's report: the claims in it anchor the verdict [VF-1].
+
 Checklist. Each item exists because a verifier once missed that class of defect [VF-2]:
 
 1. The files changed as described, and **the scope is limited to the task's files** (`git show --stat HEAD`) [PL-4].
@@ -71,6 +73,7 @@ Checklist. Each item exists because a verifier once missed that class of defect 
 11. The feature is reachable: there is a link or route to it, and it is not blocked by another path [VF-24].
 12. A gate is checked in both directions: it does not leak onto routes it should not cover, AND it covers every route it should [VF-12].
 13. None of the build pitfalls in section 2 appear in the diff.
+14. Each test drives the interface it names. A test that imports internals (private helpers, module internals no caller uses) is a `test-gap` finding [DG-14].
 
 ## 4. Negative controls
 
@@ -98,6 +101,8 @@ Checklist. Each item exists because a verifier once missed that class of defect 
 
 Every non-blocking finding carries a severity: `defect` (wrong behaviour a user could hit), `test-gap`, `doc-copy` (wrong or misleading text), `follow-up` (real but out of scope) or `bookkeeping`. The run merges all verifiers' findings into one deduped list, keeping the most severe tag on a duplicate, and the summary lists defects and test gaps first [VF-31].
 
+**A pass that carries a `defect` finding in the task's own files is a rejection.** The run turns it into `unfinished_work` and sends it to repair, so a defect never rides along on a green verdict [VF-11].
+
 `code_defect` is true only for real logic defects, not bookkeeping such as a missing trailer or an unticked box. Keeping the two apart keeps the repair-rate metric honest [VF-4, CO-2].
 
 **Repair loop** [VF-5]:
@@ -108,6 +113,8 @@ Every non-blocking finding carries a severity: `defect` (wrong behaviour a user 
 - After the third failure, report the task as failed, with the evidence.
 
 **Re-triage "non-blocking" findings by severity**, from the merged list, defects and test gaps first. Several turn out to be real: a 500 where a 400 belonged, an empty input reaching a payment provider as an opaque 502, a silent fail-open, a page stuck on Loading [VF-11, VF-31].
+
+**Gates commits get their own verifier.** When the gates agent commits a fix, one fresh verifier reviews `git diff <head_before>..HEAD`: each hunk fixes a named gate failure in this branch's files, and nothing was weakened. The result is `gates_commits_verified` [TG-7].
 
 **Never trust a subagent's claims.** Re-run the gates yourself, independently, after a run reports green, and check the tree [VF-10]. One re-run found nine broken test files, and a ship agent once reported "zero commits" that actually existed.
 

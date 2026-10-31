@@ -27,7 +27,7 @@ Templates: `templates/spec.md` and `templates/plan.md`.
 1. **Root cause, at the shared seam.** Fix the place every caller routes through, using the smallest change that fully resolves the symptom [SP-4]. When three input surfaces share one buggy helper, the fix goes in the helper.
 2. **Say so when nothing fits.** If no diagnosed mechanism actually produces the reported symptom on the reported data, the spec says so. It then either specifies the measurement still needed, or specifies a fix that is correct regardless, together with in-product evidence capture, so the next report carries its own proof [SP-3, DG-28]. Never paper over the gap.
 3. **Exact user-facing copy.** Write the actual strings. Use one canonical term per concept and no developer words [UX-14].
-4. **Tests.** At least one must fail before the fix. Name the reporter's anonymised data shape as an acceptance fixture [VF-8, TG-14].
+4. **Tests.** The regression test is the diagnosis reproduction, at the highest level that still reproduces the reported symptom, and it fails before the fix [DG-14]. Each test names the interface it drives (page, route, CLI, public function), and none imports internals. Name the reporter's anonymised data shape as an acceptance fixture [VF-8, TG-14]. If the issue carries an agent brief, its acceptance criteria join these.
 5. **Docs impact**, decided now [DC-1].
 6. **Scope boundaries.** List what is in scope and what is EXPLICITLY OUT OF SCOPE. List what the agent cannot validate (real devices, hardware, vendor behaviour) as needing a manual check, and never fake it [SP-6, VF-9]. Keep scope to what was reported, and file adjacent cleanup as separate, numbered follow-up issues [SP-5].
 7. **Contradicting an ADR.** Write "Contradicts ADR-NNNN … but worth reopening because …". Never silently override a decision [SP-7, PF-5].
@@ -46,9 +46,9 @@ Templates: `templates/spec.md` and `templates/plan.md`.
 
 ## 4. Plan rules
 
-1. **The plan contains actual code.** Give it top-tier reasoning. Write exact signatures, the code itself and checkbox TDD steps: write the failing test, run it and SEE it fail, implement, see it pass, run checks, commit. Ban "TBD", "add appropriate handling" and "similar to Task N" [PL-2]. A concrete plan lets a cheaper builder simply apply it.
+1. **The plan contains actual code.** Give it top-tier reasoning. Write exact signatures and the code itself. The root-fix task gets checkbox test-first steps: write the failing test, run it and SEE it fail, implement, see it pass, run checks, commit. Other tasks add tests where they change behaviour. Ban "TBD", "add appropriate handling" and "similar to Task N" [PL-2]. A concrete plan lets a cheaper builder simply apply it.
 2. **Return the units as structured data.** Each unit has `id`, `title`, `files`, `depends_on`, `instructions` and `acceptance`. The plan is also saved in the repo, and the build iterates over the returned list. Never hardcode build units in a script written before the plan exists [PL-3]. Hardcoded lists drop units, and half-features nearly ship.
-3. **Disjoint files per wave.** Tasks that can run in the same parallel wave touch DISJOINT files, and the verifier enforces this with `git show --stat HEAD` [PL-4, OR-11].
+3. **Vertical slices, scheduled by files.** Each task delivers observable behaviour through a real interface; never split by layer. File overlap is used only to schedule: tasks that share a file never run in the same wave, and the verifier checks scope with `git show --stat HEAD` [PL-4, OR-11].
 4. **Small tasks, marked for independence.** Independent tasks run in parallel, dependent ones in series, and each gets its own verifier and repair loop [PL-5].
 5. **Per-task laws.** Copy the relevant laws into each task, so the verifier can grep for them [SP-14, VF-25].
 6. **Reuse the shared primitives.** Tell build tasks which shared components exist (`ui/` controls, helpers), so they do not re-implement them [UX-6].
@@ -56,10 +56,11 @@ Templates: `templates/spec.md` and `templates/plan.md`.
 ## 5. Task sizing and ordering
 
 - **Split big issues into linked sub-issues and fix the smallest first** [PL-6].
-- **Cap the count.** Aim for 3 to 9 tasks and slice hard at about 10 [PL-7].
-- **Order the tasks** as root fix first, then diagnostics and guards, then docs [PL-7]. That way the user's symptom is fixed even if later tasks fail.
+- **Cap the count.** One task for a small issue, 3 to 9 for medium, and slice hard at about 10 [PL-7].
+- **Root fix first** [PL-7], so the user's symptom is fixed even if later tasks fail. Docs belong to the docs stage, not to a task.
+- **Small issues** get one combined spec-and-plan agent. The spec goes in the root-fix commit body unless the profile sets `small_spec_file: true`.
 - **Architecture reviews** follow their own flow: scan the whole codebase, produce a visual report, grill the chosen candidate against the code, record an ADR, file an issue, then build [PL-10]. A "strong" candidate can collapse under grilling.
 
 ## 6. The symptom check before build
 
-Before launching the build, ask the ranker: "Does this plan fix <reported symptom, verbatim> or a neighbouring symptom?" Give it the real neighbours as options [PL-1]. A build is the most expensive place to discover the mismatch. If the ranking is close, or picks a neighbour, go back to diagnosis.
+When no diagnosis measured a reproduction (confidence below high, or no measured evidence), ask the ranker before the build: "Does this plan fix <reported symptom, verbatim> or a neighbouring symptom?" Give it the real neighbours as options [PL-1]. A build is the most expensive place to discover the mismatch. The verdict is computed from the probabilities, not taken from the model: the top two within 0.2 is close. If it is close, or picks a neighbour, go back to diagnosis. A measured repro already answers the question, so the check is skipped.
