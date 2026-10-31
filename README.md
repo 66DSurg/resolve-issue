@@ -60,7 +60,7 @@ After that, each issue goes like this:
 ## How it works
 
 ```
-pre-flight → size → DIAGNOSE → SPEC → PLAN → BUILD ║ VERIFY ⟲ REPAIR → GATES → DOCS → STOP
+pre-flight → size → DIAGNOSE → SPEC → PLAN → BUILD ║ VERIFY ⟲ REPAIR → VIEW → GATES → DOCS → HARVEST → STOP
 ```
 
 | Stage | Agents | Tier |
@@ -71,10 +71,12 @@ pre-flight → size → DIAGNOSE → SPEC → PLAN → BUILD ║ VERIFY ⟲ REPA
 | build | 1 per task, waves on disjoint files | mid |
 | verify | 1 fresh adversarial verifier per task, with a negative control | strongest, never cheapened |
 | repair | up to 3 rounds per task | one tier above build |
+| view | 1, only when the spec says the change is user-visible: before/after screenshots at phone and desktop widths, judged against your design docs. Builds nothing; a defect the branch caused gets 1 repair, then you decide | strongest |
 | gates | 1, fixed command list, whole-log failure grep, known-flaky SET; 1 fresh verifier over any commits it makes | mid, medium or higher |
 | docs | 1, plus a claim verifier, only when the spec says docs are affected | mid |
+| harvest | 1, only when the run has side findings: deduped issue drafts, serious ones separate, minor ones in one bundle | mid |
 
-A trivial change (no code path touched, judged from the diff) runs no agents. A small issue runs about 6. The summary is rendered from the run's data, not written by a model. `stopAfter: 'diagnose' | 'plan'` and `resumeFrom: 'build'` add an optional human checkpoint.
+After the audit, the main session files the harvested side issues automatically (comments on duplicates, one bundle for minor items, the needs-triage label); `issues.auto_file: false` turns that off. A change to privacy or security behaviour (what shows when locked or logged out, how long data lives) always stops for your decision, never a ranking. A trivial change (no code path touched, judged from the diff) runs no agents. A small issue runs about 6. The summary is rendered from the run's data, not written by a model. `stopAfter: 'diagnose' | 'plan'` and `resumeFrom: 'build'` add an optional human checkpoint.
 
 In Claude Code with the Workflow tool, `skills/resolve-issue/scripts/stamp-workflow.sh <id>` makes a per-issue copy of [`templates/workflow.js`](skills/resolve-issue/templates/workflow.js). Without it, the same loop runs through Agent subagents.
 
