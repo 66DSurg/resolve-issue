@@ -6,7 +6,7 @@ The human may be reading on a phone, between other work, with no time for transc
 
 - **Ask only the questions that change the build**, one at a time, each with your recommended answer [PF-3]. Otherwise, start.
 - **Rank and act** [CM-6]. When a ranking has a clear winner, state the pick and the runner-up in one line and start. Ask only when the ranking is close or the evidence contradicts it. When asked "what next?", open with a ranked position, not a question. In one case a ranking gave 0.97 and a four-option question still followed: "Why are you not using the ranking table to decide?"
-- **Ask what came back from users or outreach** before proposing more features [CM-11, PJ-2].
+- **Ask what came back from users or outreach** before proposing more features [CM-11].
 - **Read dictated messages for intent.** Transcription mangles brand and product names, so work out the intended word from context [CM-8].
 - **Do not assume jurisdiction or locale** from where the user lives, and do not advise outside your expertise [CM-10].
 
@@ -46,8 +46,3 @@ Next: your yes to merge; then a separate yes to push.
 ## Board and tracker
 
 - **Moving board cards is the agent's job**: "in progress" at launch, "staged" when pushed. The human files issues, verifies and approves pushes [CM-12].
-
-## Tool quirks worth knowing
-
-- **Browser automation**: some rich-text editors ignore typed input, so insert text programmatically. Tick checkboxes by coordinates and confirm with a zoomed screenshot. Know each site's per-file upload limits [TQ-1].
-- **OAuth authorisation windows are short.** Finish the callback exchange as soon as the user pastes the URL [TQ-2].

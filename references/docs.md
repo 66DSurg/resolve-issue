@@ -21,7 +21,6 @@ Rules:
 - **Run a link and path checker** over the gateway docs and agent-context files, including paths inside code spans, plus a structure check for the required sections [DC-11].
 - **Internal docs**: each shipped slice updates the page that owns what it changed, stamps a "verified" field with the release, and redeploys. Build internal docs strictly (links, ownership, word budgets) [DC-12]. Monitor the deployed docs site's version against VERSION, warning softly and never blocking [DC-13].
 - **Keep each external ID or asset manifest in exactly one file**, and drift-check every copy by format, placement and content hash, naming the command that fixes a mismatch [DC-14].
-- **Tutorial videos** are only for non-obvious or blocking features. Record them after ship, re-render them when the flow changes, and keep their IDs in one manifest [DC-15].
 - **File follow-up docs or video issues after the merge**, based on what was actually built, after checking what the build already updated [DC-16].
 - **Mark superseded notes obsolete**, with a pointer to what replaced them [DC-17].
 - **Document the known gaps in an automation's coverage** instead of presenting it as complete [DC-18].

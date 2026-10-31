@@ -4,7 +4,7 @@ Every lesson that `resolve-issue` encodes, merged from about 600 raw notes gathe
 
 Built while making Case Logbook (caselogbook.com) by Dr Biswajit Dutta Baruah.
 
-How to use this file: every lesson has a stable id, the section code plus its number (`DG-7` is Diagnose lesson 7). The stage references cite these ids next to the instruction that applies each lesson, so you can always trace a rule back to the incident that created it. When a run teaches you something new, append it to the right section in the same format, with the next free number (see DC-21), and cite it from the stage reference that should apply it. `scripts/check.py` fails if any lesson is not cited anywhere.
+How to use this file: every lesson has a stable id, the section code plus its number (`DG-7` is Diagnose lesson 7). The stage references cite these ids next to the instruction that applies each lesson, so you can always trace a rule back to the incident that created it. This file is the CORE catalogue, the rules that hold for any project. Lessons that encode one product's taste or one domain live in `references/packs/*.md`, keep their ids, and load only when their pack is switched on; a line here marks where each went. When a run teaches you something new, append it to the right section in the same format, with the next free number (see DC-21), and cite it from the stage reference that should apply it. `scripts/check.py` fails if a core lesson is not cited anywhere. A lesson that no longer earns its place is archived or moved to a pack, never deleted, and its id is never reused (SKILL.md, "Feed the lessons back").
 
 In the origin stories, "the operator" is the solo developer the lessons came from.
 
@@ -376,9 +376,9 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 17. **Store a learned artifact as a declarative recipe applied by a small interpreter, never as generated executable code.** — Recipes are safe, reviewable, versionable and shareable. (Generated code was rejected for its security surface.)
 18. **Run reconciliation in both directions, since the two directions mean opposite things. Scope it to the window the source covers, and word results as "possible" with a "review" action, never as an accusation.** — A missing record could mean unbilled work, or an incomplete log. (This was the unbilled-case detection design.)
 19. **Dedupe reference entities as part of any dedup effort.** — Duplicates poison anything hashed or keyed on them. (Several records for one institution made an identity hash untrustworthy.)
-20. **Never sum across currencies. Compare currency-free ratios instead.** — Currency follows the payer. (Cross-site comparisons use an effective percentage.)
-21. **Label every benchmark number with its provenance (sourced, estimated, observed) and upgrade it as better data arrives.** — Unlabelled estimates pass as facts. (No real national numbers existed, so estimates shipped labelled.)
-22. **Prefer a crowdsourced canonical list with a pending-review state over seeding from a low-quality public dataset.** — Junk seeds are permanent. (A public dataset was a third junk.)
+20. *Moved to `references/packs/data-import.md`: currencies.*
+21. *Moved to `references/packs/data-import.md`: benchmark provenance.*
+22. *Moved to `references/packs/data-import.md`: crowdsourced reference lists.*
 23. **Remember that soft deletes leave orphans that block hard deletes. A real reset walks the live FK graph children-first in one routine.** — Hand-written deletes miss edges. (Soft-deleted records left pinned rows, and non-cascading FKs blocked deletes.)
 24. **When deciding whether to re-apply something, check for divergence between a fresh CI environment and long-lived production.** — Skip-if-unchanged can be right in CI and wrong in production. (A cascading DROP could remove a function production would then skip re-creating. The fix was "checksum changed OR any migration ran".)
 25. **Keep migrations that auto-run on production additive only (create, add column, create-or-replace), and have verifiers grep for drop, truncate and delete.** — They ship with the tag and cannot be taken back. (This is a standing verifier law.)
@@ -389,37 +389,8 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 2. **Never let an error message lie: show "couldn't reach the server" only for a real network failure.** — Lying errors send users and debuggers the wrong way. (Network errors were shown for non-network failures.)
 3. **Change WHEN an alarm is raised separately from WHETHER an unsafe action is blocked. Transient errors still fail closed but must not trip sticky global states, and sticky flags need a self-heal path.** — A single blip can strand users. (One transient network failure trapped users on a recovery modal.)
 4. **Never leave the UI blank: after any action, a section renders exactly one visible outcome (results, an explicit "none", or a readable error). Contain failures to the failing section, and test each state.** — Blank looks like broken. (Two production bugs blanked a section and a whole page.)
-5. **Never let a blocking state be a dead end. Show a global overlay on every route with a quiet fallback (a cancelled biometric falls through to the password field with no red error) and escape hatches, and decide explicitly which state wins when two apply.** — Stranded users leave. (Returning after idle locked the app with no unlock prompt.)
-6. **Have one shared component per control (search, select, toggle, filter, sheet, button, chip). New pages reuse it, missing primitives are added to the library, primitives accept no arbitrary styling hooks (callers size the container), and a guard enforces it. Tell build agents about it.** — Every page that styles its own control looks different. (4 search boxes had 4 looks and 33 selects had 6, and the search box drifted for "the second or third time".)
-7. **Keep one canonical asset for brand marks across every surface, plus a hosted raster copy for email.** — Re-implementations diverge. (The logo had diverged across six surfaces.)
-8. **Inline the brand tokens in server-rendered pages.** — They do not receive the app's CSS variables. (A server-rendered confirm page kept an old accent colour.)
-9. **Treat visual regressions (squashed circles, unreadable disabled buttons) as urgently as functional ones, and check every page that shares the pattern.** — Users experience them as breakage. (A link-density fix reached one docs page while its siblings kept the problem.)
-10. **Use 44 px minimum touch targets and 16 px input text on phones, and communicate errors in words rather than red fields.** — Inputs under 16 px trigger iOS zoom. (Dense 36 px controls fell below the target.)
-11. **Put the key facts of a view page above the fold at phone width. Edit-only controls appear only in edit mode, settings go in a menu, and explanations go in docs. Check what sits above the fold on every new view page.** — Padding and options push the facts out of sight. ("Looks better but not functional.")
-12. **In dense lists, hide chips whose value is the default, so a chip means "this row is unusual". Keep detail fields that users must confirm.** — Default chips carry no signal. (A default role chip appeared on about 95% of rows.)
-13. **Never show schema names or raw IDs in the UI. Map them through a label dictionary, with domain-native abbreviations as the exception.** — Users are not developers. (An edit-history view would have shown `*_id` columns.)
-14. **Pick one canonical term per user-facing concept, preferably one users already know from familiar apps. Never mix synonyms, and keep developer words like "LLM" out of copy.** — Synonyms confuse. (Two names for the unlock secret confused users, and a messaging-app term stuck.)
-15. **Treat text the user wrote as sacred: store it verbatim. Extraction reads it but never edits or consumes it, and any enrichment is visible.** — Vanishing text reads as data loss. (A user watched sentences disappear after extraction.)
-16. **Ask clarifying questions inline, where the user already is, never in a separate queue that forces navigation and resubmission, and multiply the friction by real daily volume before accepting a flow.** — Separate review queues multiply friction. (One record needed six or seven submit-navigate-answer cycles, about 90 submissions a day.)
-17. **Keep signup minimal and never collect a fact another flow already owns, enforced by a check.** — One source per fact. (Landing-page fields duplicated onboarding and never reconciled.)
-18. **Ask users only for values they can read off the source, in a partial pre-filled form. Never block on derived values, and always offer "import as-is".** — Users cannot supply aggregates. (One uncomputable metric triggered a full "we couldn't read this" form.)
-19. **Never fold two independent dimensions, such as trustworthiness and completeness, into one indicator.** — Combined indicators mean nothing. (A verification dot was kept separate from a "needs detail" nudge.)
-20. **Never render empty or degenerate charts. Gate each one on data presence, a minimum number of categories, and fit with the user's context.** — A "by site" chart for a one-site user is noise. (This became the show/hide rule.)
-21. **Pair every insight with a concrete next action, chosen deterministically from a catalogue keyed to metric and trend. A model may phrase the action but never invent its numbers.** — A decline with no next step makes users avoid the app. (This shaped the insights design.)
-22. **Use colour for hierarchy, not provenance: one accent for focus, grey for context, a single action colour once per screen, and shape for direction.** — Overloaded colour confuses. (Using the action colour for declines caused confusion.)
-23. **Do not rank users by volume or build leaderboards. Lead with each user's own trend over time, and show peers only as soft bands.** — Rankings drive the wrong incentive. (Volume ranking would push users to chase volume.)
-24. **Practise radical simplicity: pare down rather than add complexity to feel important, and design for lasting value, not onboarding bait. Prefer one meaningful gate over many small ones.** — "Can a tired user at 9 PM still do this?" (This was the founding principle of the insights system.)
-25. **Show records by the identifier users actually remember, such as a name, not system IDs.** — A list of IDs is useless to users. (The case list moved from IDs to names.)
-26. **Make everyday authentication as low-friction as a banking app, and don't re-propose designs the owner has rejected.** — Friction kills daily use. (Typing a passphrase on every unlock was rejected.)
-27. **If two technically different operations look identical to users, consider merging them, and research the simplest proven pattern first.** — Users cannot tell them apart, and each causes its own regressions. (Two biometric operations caused repeated regression cycles.)
-28. **After an architecture change, clean up the old user-facing words and flows.** — Users keep following the old mental model. (Old "back up / restore" labels led into a flow that no longer worked.)
-29. **Let users see that automated output is accurate before any downstream magic runs.** — Visible errors stop users at the door. (Poor transcription stopped a keen user from ever starting.)
-30. **Tell users plainly when an action is a no-op, relabel the button to match, and drop ambiguous metrics such as "today".** — Confusing feedback erodes trust. (A re-upload offered "Import 0 cases", and "today" jumped to 105 on import day.)
-31. **Have an agent auto-resolve obvious matches and ask the user only about genuine conflicts.** — Asking about everything is noise. (Notes vs selection: auto-pick on a semantic match, ask on left vs right.)
-32. **End every user email with a support contact and a docs link.** — Locked-out users cannot reach in-app feedback. (This became the email footer rule.)
-33. **An input that adds content (dictation, paste, an "add more" button) appends to what is already there and never replaces it.** — Replacing existing text makes the user do the work twice and reads as data loss. (A user pressed the mic to add a sentence and watched the text she had already entered vanish.)
-34. **Show long human names in a short form wherever space is tight, and do not assume one naming culture.** — Name lengths and conventions differ by region. (The operator, working in a region where full names run long, asked for a short name in the header.)
-35. **Deliver the app's own events as in-app notices, not browser or OS notifications, unless the user opted in.** — A browser pop-up for an in-app event feels like a bug or spam. (A notice came up as a browser notification and the operator asked why it was not in the app.)
+
+UX-5 to UX-35 are in `references/packs/ux.md`.
 
 ## 17. Docs (DC)
 
@@ -437,7 +408,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 12. **Have each shipped slice update the internal-docs page that owns what it changed, stamp a "verified" field with the release, and redeploy. Build internal docs strictly (links, ownership, word budgets, click depth).** — Hand-written overviews drift unless every slice touches them. (The internal docs site drifted between sessions.)
 13. **Monitor the deployed docs site's version against VERSION, warning softly and never blocking a deploy.** — Published docs lag unnoticed. (A report-only check now surfaces the lag.)
 14. **Keep each external ID or asset manifest in exactly one file, and drift-check every copy by format, placement and content hash, naming the command that fixes a mismatch.** — Copies drift. (Video IDs and posters were duplicated between the app and the site.)
-15. **Make tutorial videos only for non-obvious or blocking features, record feature videos after the feature ships, re-render them when a release changes the flow, and keep media IDs in one manifest.** — Videos go stale fast. (Several walkthroughs went out of date after one release.)
+15. *Moved to `references/packs/product.md`: tutorial videos.*
 16. **File follow-up docs or video issues after the merge, based on what was actually built, after checking what the build already updated.** — Plans overestimate the docs left to do. (Only one video issue was still needed.)
 17. **Mark superseded notes obsolete, with a pointer to what replaced them.** — Later readers act on dead premises. (A note about a removed race stayed in memory.)
 18. **Document the known gaps in an automation's coverage instead of presenting it as complete.** — Hidden gaps get relied on. (The runbook names a missing "in-progress" label.)
@@ -469,24 +440,13 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 2. **Measure a repair-rate baseline before cheapening a stage, log tasks, repairs and code-defect rejections per run, and revert the cheaper tier if repairs rise materially.** — Tier changes are experiments. (The baseline was about 23% of build tasks needing repair, 5 of 22, at 1.3M to 2.5M subagent tokens per workflow.)
 3. **Probe a model tier with a trivial instruction ("reply with exactly: ok") before allowing it any stage that can write or commit, and exclude tiers that fail.** — Cheap models can go rogue. (The smallest tier invented a task, wrote 342 lines, committed to main under the human's name without the trailer, then amended its own commit.)
 4. **Stub paid external model calls in e2e and CI by default and assert zero billed calls. Keep a tiny real-API smoke test (about 2 calls) on release tags only, gate live-model suites with a skip flag locally as well as in CI, and feature-detect stub support so older branches still run.** — Tests otherwise bill on every run. (CI e2e on the real extractor drove daily API cost up several-fold, and local server tests still billed.)
-5. **Spend an expensive model once, where judgment is needed, then freeze its result into a cached declarative recipe and replay it deterministically.** — The expensive path then shrinks over time. (Spreadsheet import maps a new layout once, and later sheets of that shape are free.)
-6. **Run extractors cheapest-first (cached recipe → known-pattern reader → model) and stop at the first one whose output reconciles. Judge confidence by whether the data checks itself (totals, ratios), never by the model's self-report.** — Self-reported confidence is unreliable. (Per-source hand-parsers did not scale, and the cascade did.)
-7. **Treat the top-tier model on the request path as a cost trap. Use the cheaper validated model there and reserve the expensive one for rare offline jobs.** — The top tier costs about 5x as much. (Extraction runs on the sweet-spot model.)
-8. **Know the monthly burn and the break-even point, and stop paid channels whose return does not justify them.** — Costs creep. (A paid outreach tool cost more than the rest of the stack and was stopped.)
+
+CO-5 to CO-8 are in `references/packs/cost.md`.
 
 ## 20. Product judgment (PJ)
 
-1. **Prove the core with real users before building out. Build the thinnest complete loop (every stage working, no stubs), add detail later, and flag work that delays real-user feedback.** — Investment should follow evidence. (The operator wanted a live proof of concept first.)
-2. **While waiting for feedback, watch, respond and fill gaps with known low-risk polish. Park new ideas as issues, and hold big builds until real demand appears.** — Building for zero users is building ahead of demand. (One user's silence nearly triggered a major feature.)
-3. **If even the builder forgets to use the product, treat the friction as structural (wrong moment, deferred value), not motivational. Deliver value from data that already exists before asking for a new habit.** — Reminders paper over structural friction. (Only users whose data was imported for them stayed.)
-4. **Sequence hard prerequisites first.** — You cannot build the receiving end of a loop before its source exists. (Bug-flow tooling waited for production.)
-5. **Do not build billing or entitlements before you need to charge. Lock the decision and build it later.** — It is premature work. (Billing was kept out of the launch slice.)
-6. **Keep the engine universal and put domain-specific vocabulary in overlay files.** — Do not over-tune for the one active domain. (Matching vocabulary was specific to one specialty.)
-7. **Close the loop on AI quality by capturing de-identified correction deltas (input, output, the user's correction) and reviewing recurring misses by category.** — Refine from real corrections, not guesses. (Prompt refinement is driven by corrections.)
-8. **When a design bets on a risky dependency, document the fallback, name the telemetry thresholds that trigger it, and validate on the real target device first.** — Risky bets need exits. (An on-device speech model shipped with a documented fallback.)
-9. **Give a solo operator a minimal health view from day one. Reuse existing alerting services, and add detail only once real use shows what hurts.** — One person cannot watch a terminal. (Detailed monitoring was deferred until real use showed the need.)
+PJ-1 to PJ-9 are in `references/packs/product.md`.
 
 ## 21. Tool quirks (TQ)
 
-1. **Browser automation: some rich-text editors ignore typed input, so insert text programmatically. Tick checkboxes by coordinates and confirm with a zoomed screenshot. Know each site's per-file upload limits.** — These fail silently. (Typing into an email body and ticking element-referenced checkboxes both failed.)
-2. **Remember that OAuth authorisation windows are short: finish the callback exchange as soon as the user pastes the URL.** — The code expires. (Re-authorising a connector from a phone needed an immediate exchange.)
+TQ-1 and TQ-2 are in `references/packs/tool-quirks.md`.
