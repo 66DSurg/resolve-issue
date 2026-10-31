@@ -6,7 +6,7 @@ Built while making Case Logbook (caselogbook.com) by Dr Biswajit Dutta Baruah
 
 ## Why
 
-Agents are good at writing a fix. The trouble is that they are just as good at writing a confident fix for the wrong cause, reporting green from the tail of a log, sweeping stray files into a commit, or hijacking the developer's dev server. This skill is the process that survived about 70 agent-driven workflows on one production app. Around 600 raw lessons were merged into 380 general ones, each with a one-line origin story, in [`references/lessons.md`](references/lessons.md). Every instruction in the skill cites the lesson behind it (`[DG-1]`), and a check fails if any lesson is listed without being applied.
+Agents are good at writing a fix. The trouble is that they are just as good at writing a confident fix for the wrong cause, reporting green from the tail of a log, sweeping stray files into a commit, or hijacking the developer's dev server. This skill is the process that survived about 70 agent-driven workflows on one production app. Around 600 raw lessons were merged into about 390 general ones, each with a one-line origin story, in [`references/lessons.md`](references/lessons.md). Every instruction in the skill cites the lesson behind it (`[DG-1]`), and a check fails if any lesson is listed without being applied.
 
 Some of the lessons that changed outcomes most:
 

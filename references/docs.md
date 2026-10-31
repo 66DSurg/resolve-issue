@@ -14,7 +14,7 @@ Scope [DC-4]:
 Rules:
 - **Docs must never promise what the code does not do.** Check every sentence against the code. The changelog claims only what shipped. Never claim production is fixed unless the deploy path really ships the change [DC-3]. The verifier checks the claims [VF-6].
 - **The PR states "docs updated" or "no docs needed" plus a real justification.** If CI can enforce exactly one choice and a minimum length, it should [DC-1].
-- **Add an ADR only when the decision is hard to reverse, surprising, and a real trade-off** [DC-6]. Ground it in cited evidence and never invent a rationale. Record the rankings, the decision and any overrules inside it [DC-7]. Decide whether to amend an existing ADR or create a new one.
+- **Add an ADR only when the decision is hard to reverse, surprising, and a real trade-off** [DC-6]. Ground it in cited evidence and never invent a rationale. Record the rankings, the decision and any overrules inside it [DC-7], plus each rejected alternative and why it lost, so a later "why not X?" is answered from the docs [DC-22]. Decide whether to amend an existing ADR or create a new one.
 - **Number ADRs sequentially without backfilling gaps.** Give each exactly one owning overview page, and generate the index with a CI check [DC-8].
 - **Keep a source-of-truth matrix** [DC-9]: shipped state in the changelog, the version in one VERSION file, decisions in ADRs, terms in the glossary. Do not duplicate release narratives in READMEs or agent-context files. Agent-context files hold operating rules only [DC-20].
 - **Doc checkers only verify; someone still writes the docs.** Check the API inventory both ways: every endpoint documented, and every documented endpoint real. API specs may be a subset but never stale [DC-10].

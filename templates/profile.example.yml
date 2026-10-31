@@ -42,7 +42,7 @@ docs:
   changelog: CHANGELOG.md
   unreleased_heading: "## Unreleased"
   version_file: VERSION
-  user_docs: [frontend/src/routes/(docs)]
+  user_docs: [docs/user]
   dev_docs: [docs/developer]
   adr_dir: docs/adr
   glossary: CONTEXT.md
@@ -64,7 +64,7 @@ git:
   trailers:
     - "Co-Authored-By: Claude <noreply@anthropic.com>"
   never_stage:
-    - frontend/static/icons/scratch.svg
+    - scratch/
 
 tiers:
   diagnose: {model: opus, effort: high}
@@ -89,8 +89,8 @@ ranker:
 laws:
   - "Migrations that auto-run on production are additive only: no DROP, TRUNCATE or DELETE."
   - "No raw colour values outside the design tokens file."
-  - "Surface-facing copy never says 'LLM'."
-  - "UI controls come from frontend/src/lib/ui; never re-implement one on a page."
+  - "User-facing copy never says 'LLM'."
+  - "UI controls come from frontend/src/components/ui; never re-implement one on a page."
 
 privacy:
   identifier_patterns:

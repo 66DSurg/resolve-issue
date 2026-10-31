@@ -35,7 +35,9 @@ These are the general lessons that apply when an issue changes what users see, w
 - **In dense lists, hide chips whose value is the default**, so a chip means "this row is unusual" [UX-12].
 - **Never show schema names or raw IDs.** Map them through a label dictionary, with domain-native abbreviations as the exception [UX-13]. **Show records by what users remember**, such as a name, not a system ID [UX-25].
 - **One canonical term per user-facing concept**, preferably one users know from familiar apps. Never mix synonyms, and keep developer words like "LLM" out of copy [UX-14]. **After an architecture change, clean up the old user-facing words and flows** [UX-28].
-- **Text the user wrote is sacred.** Store it verbatim. Extraction reads it but never edits or consumes it, and any enrichment is visible [UX-15].
+- **Text the user wrote is sacred.** Store it verbatim. Extraction reads it but never edits or consumes it, and any enrichment is visible [UX-15]. **An input that adds content (dictation, paste, "add more") appends and never replaces** [UX-33].
+- **Show long human names in a short form where space is tight**, and do not assume one naming culture [UX-34].
+- **Deliver the app's own events as in-app notices**, not browser or OS notifications, unless the user opted in [UX-35].
 - **Ask clarifying questions inline, where the user already is**, and multiply the friction by real daily volume before accepting a flow [UX-16]. **Auto-resolve obvious matches and ask only about genuine conflicts** [UX-31].
 - **Keep signup minimal** and never collect a fact another flow already owns, enforced by a check [UX-17].
 - **Ask users only for values they can read off the source**, in a partial pre-filled form. Never block on derived values, and always offer "import as-is" [UX-18].

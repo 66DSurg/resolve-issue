@@ -7,7 +7,7 @@ description: Takes ONE issue (bug report, feature request, tracker issue #N, a p
 
 Take one issue from report to a verified branch, then stop.
 
-This skill is the distilled process from months of agent-driven work on one production app: about 70 ad-hoc workflows and around 600 raw lessons, merged into 380 in `references/lessons.md`. Every instruction here exists because skipping it once cost a build cycle, a bad release or a user's trust. The ids in square brackets (`[DG-1]`) point to the lesson and its origin story. Read the lesson when a rule seems arbitrary. The reason is usually a concrete failure.
+This skill is the distilled process from months of agent-driven work on one production app: about 70 ad-hoc workflows and around 600 raw lessons, merged into about 390 in `references/lessons.md`. Every instruction here exists because skipping it once cost a build cycle, a bad release or a user's trust. The ids in square brackets (`[DG-1]`) point to the lesson and its origin story. Read the lesson when a rule seems arbitrary. The reason is usually a concrete failure.
 
 Scope: **issue → verified branch.** Merging to the main line, pushing, tagging and releasing are outside this skill. Each needs its own human yes [HG-1, HG-2].
 
@@ -55,7 +55,7 @@ Do this inline, before launching anything. It is cheap, and it prevents the most
 1. **Make sure a tracker issue exists**, even for a hot-fix, and cite only issue numbers that really exist [PF-1].
 2. **Capture the human's report verbatim**, plus screenshots, as files that every stage can read. Paraphrase loses the detail that separates the real symptom from a neighbouring one [PF-11]. Scrub identifiers first [PS-1, PS-2].
 3. **Read the prior decisions.** That means ADRs, decision notes, memory, and earlier attempts on the same surface. Flag any conflict with a locked decision, and treat notes as possibly stale until the code confirms them [PF-4, PF-5, PF-6, DG-11].
-4. **Check feasibility** of any new dependency, data source or token before you spec on top of it [PF-7, PF-8, PF-9, PF-10].
+4. **Check feasibility** of any new dependency, data source or token before you spec on top of it, on every platform the product targets [PF-7, PF-8, PF-9, PF-10, PF-12].
 5. **Ask only the questions that change what gets built.** Ask them one at a time, each with your recommended answer. For everything else, start, and write your assumptions into the spec [PF-3]. The question that matters most is usually the one that separates the reported symptom from a neighbouring one: which screen, which flow, which data [DG-15].
 6. **A destructive or data-loss-sensitive request** never goes straight to a build. It gets a decision menu first [SP-11].
 
@@ -116,7 +116,7 @@ Write the summary in the format in `references/communication.md`. It covers the 
 |---|---|
 | commits on the issue branch inside its worktree | agents, with trailers, explicit paths only |
 | merge into the main line | human yes |
-| push | a human yes **for each push**. An earlier "ship it" does not carry forward [HG-2] |
+| push | a human yes **for each push**. An earlier "ship it" does not carry forward [HG-2]. Any stricter gate the human declares (a yes per commit, say) applies on top [HG-18] |
 | version bump, tag, release, deploy | human yes, done in the main loop, never inside a run [GR-9] |
 | repo settings, secrets, CI triggers | human only [HG-1] |
 | closing the issue | only when the work reaches production and the reporter has confirmed it [GR-10, DG-15] |

@@ -21,7 +21,8 @@ The human may be reading on a phone, between other work, with no time for transc
 
 - **Know where the human actually tests** [CM-4]. If they dogfood on staging, "test it" means deploy to staging after their push approval, not a local run.
 - **When the user is remote**, offer a way to reach local services (a tunnel or private mesh) before telling them to run something locally, and set the env the tunnel needs, such as public base URLs [CM-5].
-- **When a manual step is needed in an external console**, remind the human which account to sign in with [CM-9].
+- **When a manual step is needed in an external console**, remind the human which account to sign in with [CM-9]. First check whether an available tool or authorised connection can do it. Hand over only what really needs the human: a permission block, a secret, a physical device [CM-14].
+- **When the human sends you on a detour mid-task**, note the original task first and return to finish it [CM-13].
 
 ## The end-of-run summary
 

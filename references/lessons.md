@@ -47,6 +47,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 9. **Measure an external data source's quality before building on it.** — A cheap measurement saves you from seeding junk. (An open map dataset for one region was about a third junk and missing the operator's own institution.)
 10. **Treat a token's write access as unavailable until a write actually succeeds.** — Notes about access go stale. (An integration recorded as "full read+write" was read-only, so deploy triggers and cache purges failed.)
 11. **Pass the human's verbatim report and screenshots to every stage as readable file paths.** — Paraphrase loses the detail that tells the real symptom from a neighbouring one. (Several runs fixed a neighbouring symptom after the report had been summarised.)
+12. **Check a dependency against every platform the product targets (desktop, Android, iOS, each browser) before choosing it. "Works on one platform" is not feasible.** — A single-platform pick silently drops whole groups of users. (An on-device speech engine was proposed in the same breath as one mobile browser, which would have left desktop and Android users out of a product meant to work for anyone, anywhere.)
 
 ## 2. Diagnose (DG)
 
@@ -114,6 +115,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 11. **When ranking a queue, include untriaged items that the default ordering cannot rank.** — Otherwise they are invisible. (The pinned queue sorted only labelled issues.)
 12. **Re-rank the queue every one to three resolved items in a long campaign instead of following a fixed plan.** — Priorities shift as you learn. (A 29-issue refactor campaign was re-ranked every 1 to 3 items.)
 13. **Track every follow-up from a long saga as a real issue until it is done.** — Long slices make people forget them. (The operator said dropped follow-ups leave "a gaping hole".)
+14. **When a ranked queue surprises the human, audit its inputs (labels, priority fields, the rubric) before defending the order.** — A strange order is usually a bad input, not a deep insight. (A cosmetic issue sat above serious ones, and the operator rightly asked whether the queue worked at all.)
 
 ## 5. Sizing and budget (SZ)
 
@@ -300,7 +302,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 
 ## 13. Human gates and safety (HG)
 
-1. **Agents never push, tag, bump the version, change repo settings or secrets, or trigger CI workflows. The run stops at a verified branch, and commit, push and release each need a separate human yes.** — Unattended pushes have deployed untested work. (A run once pushed untested work to production.)
+1. **Agents never push, tag, bump the version, change repo settings or secrets, or trigger CI workflows. The run stops at a verified branch: agents commit only on the issue branch, and merge, push and release each need a separate human yes.** — Unattended pushes have deployed untested work. (A run once pushed untested work to production.)
 2. **Approval is per push. A "ship it", a batch option or a cadence choice does not carry forward to the next push. Commit freely and hold the push.** — Past approvals do not cover new changes. (Follow-on fixes were pushed under an earlier "ship it", and four slices went out on one option click.)
 3. **When the human explicitly says "push it" in this turn, push without asking "are you sure?".** — That is the approval. (The operator often works from a phone and cannot run git there.)
 4. **Keep project instruction files consistent with current permissions.** — Permission classifiers treat them as authority, so a stale rule blocks approved actions. (A stale "operator pushes" line blocked a push the operator had just approved.)
@@ -317,6 +319,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 15. **Make "nuke data" operations an operator-only, scoped, transactional script (correct FK order, idempotent, reports counts), never a consumer button.** — A wipe button is a foot-gun. (It would have endangered the owner's demo data, and hand-written SQL kept leaving orphans.)
 16. **With account-wide tool access, touch only the resources of the project in scope unless explicitly asked.** — Integrations can reach unrelated business resources. (One connector could modify unrelated DNS.)
 17. **Make deploy changes fail safe: red, pending or missing CI keeps the current version running and logs loudly, with a documented override.** — Failing open deploys untested code. (Hosts had been deploying untested commits.)
+18. **Honour any stricter gate the human declares for a campaign, such as a yes before each commit, on top of the defaults.** — The human sets the floor, never the agent. (In a long refactor campaign the operator asked for a summary, then a yes to commit, then a separate yes to push, for every item.)
 
 ## 14. Privacy and security (PS)
 
@@ -409,6 +412,9 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 30. **Tell users plainly when an action is a no-op, relabel the button to match, and drop ambiguous metrics such as "today".** — Confusing feedback erodes trust. (A re-upload offered "Import 0 cases", and "today" jumped to 105 on import day.)
 31. **Have an agent auto-resolve obvious matches and ask the user only about genuine conflicts.** — Asking about everything is noise. (Notes vs selection: auto-pick on a semantic match, ask on left vs right.)
 32. **End every user email with a support contact and a docs link.** — Locked-out users cannot reach in-app feedback. (This became the email footer rule.)
+33. **An input that adds content (dictation, paste, an "add more" button) appends to what is already there and never replaces it.** — Replacing existing text makes the user do the work twice and reads as data loss. (A user pressed the mic to add a sentence and watched the text she had already entered vanish.)
+34. **Show long human names in a short form wherever space is tight, and do not assume one naming culture.** — Name lengths and conventions differ by region. (The operator, working in a region where full names run long, asked for a short name in the header.)
+35. **Deliver the app's own events as in-app notices, not browser or OS notifications, unless the user opted in.** — A browser pop-up for an in-app event feels like a bug or spam. (A notice came up as a browser notification and the operator asked why it was not in the app.)
 
 ## 17. Docs (DC)
 
@@ -433,6 +439,7 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 19. **When trimming docs, aim for shorter and current, but never delete load-bearing content (runbook steps, gotchas, invariants, exact commands). Update every link when moving files, and let the link checker gate it.** — Aggressive trims remove operational steps. (One audit nearly did.)
 20. **Keep agent-context files to operating rules. Shipped state goes in the changelog.** — Narratives bloat context and go stale. (See DC-9.)
 21. **After any persisted state change, write the lesson back into this file so the next run inherits it.** — Lessons left in chat are lost. (The operator wants every learning, small to large, fed back into the skill.)
+22. **Record each rejected alternative and why it lost, in the ADR or spec, so a later "why not X?" is answered from the docs instead of being re-litigated.** — Otherwise the same mistake gets tried again. (The operator asked why a wrapped engine had been preferred over the direct library and whether any record said why. The answer had to be rebuilt.)
 
 ## 18. Communication (CM)
 
@@ -448,6 +455,8 @@ In the origin stories, "the operator" is the solo developer the lessons came fro
 10. **Do not assume jurisdiction or locale from where the user lives, and do not advise outside your expertise.** — Assumptions go wrong. (A business entity was registered in another country from the one assumed.)
 11. **Ask what came back from outreach or users before proposing more features.** — Demand should steer building. (The agreed posture was to wait for replies.)
 12. **Treat moving tracker board cards as the agent's job (in progress at launch, staged when pushed). The human files issues, verifies and approves pushes.** — It keeps the board true without burdening the human. (The operator ratified this board model.)
+13. **When the human sends you on a detour mid-task, note the original task first and return to finish it.** — Detours swallow the work they interrupted. (The operator had to add "don't forget what you went there for earlier".)
+14. **Before handing the human a manual step, check whether an available tool or an authorised connection can do it. Hand over only what really needs them: a permission block, a secret, a physical device.** — Every manual step costs the human time they may not have. (After re-authorising a connector, the operator was asked to do the step by hand anyway: "Don't ask me to do it manually.")
 
 ## 19. Cost (CO)
 
