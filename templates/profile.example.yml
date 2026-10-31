@@ -1,0 +1,101 @@
+# .claude/resolve-issue.yml: an example profile for a hypothetical TypeScript
+# monorepo with a Bun backend and a SvelteKit frontend. Copy it, then let
+# first-run discovery (references/project-profile.md) correct every value.
+version: 1
+project: acme-notes
+repo:
+  remote: acme/notes
+  main_branch: main
+  nested_in_parent: false
+
+commands:
+  install: bun install
+  codegen: cd frontend && bunx svelte-kit sync
+  typecheck: cd server && bun run typecheck && cd ../frontend && bun run check
+  lint: cd server && bun run lint
+  unit: cd server && bun test && cd ../frontend && bun run test
+  e2e: bun run e2e
+  e2e_isolated: scripts/e2e-isolated.sh --backend-port {backend} --frontend-port {frontend}
+  build: cd frontend && bun run build
+  docs_checks:
+    - bun scripts/docs/check_links.js
+    - bun scripts/docs/check_version_consistency.js
+
+# The SET of specs known to flake. Only a failure inside this set is non-blocking.
+known_flaky:
+  - tests/e2e/upload-large.spec.ts
+  - tests/e2e/offline-sync.spec.ts
+
+ports:
+  reserved: [5173, 8000]       # the developer's own dev servers. Never touch.
+  agent_range: [5300, 5399]
+
+env:
+  link: [.env, secrets]        # symlinked from the main checkout, never copied
+  source: .env.test
+
+worktrees_dir: ../notes-worktrees
+branch_prefix: fix/
+spec_dir: docs/issues          # → docs/issues/2026-10-31-search-blank/spec.md
+
+docs:
+  changelog: CHANGELOG.md
+  unreleased_heading: "## Unreleased"
+  version_file: VERSION
+  user_docs: [frontend/src/routes/(docs)]
+  dev_docs: [docs/developer]
+  adr_dir: docs/adr
+  glossary: CONTEXT.md
+  index: docs/README.md
+
+issues:
+  tracker: github
+  close_trailer: "Ships: #{n}"   # main deploys to staging, so do not close on merge
+
+labels:
+  needs-triage: triage-pending
+  ready: ready
+  in-progress: in-progress
+  blocked: blocked
+  keep-open: keep-open
+
+git:
+  subject: "<summary> (#{n})"
+  trailers:
+    - "Co-Authored-By: Claude <noreply@anthropic.com>"
+  never_stage:
+    - frontend/static/icons/scratch.svg
+
+tiers:
+  diagnose: {model: opus, effort: high}
+  spec: {model: null, effort: high}
+  plan: {model: null, effort: high}
+  build: {model: sonnet, effort: medium}
+  verify: {model: null, effort: high}
+  repair: {model: null, effort: high}
+  gates: {model: sonnet, effort: medium}
+  docs: {model: sonnet, effort: medium}
+  _excluded: [haiku]             # failed the "reply with exactly: ok" probe
+  _baseline: "5 repairs / 22 build tasks before tiering"
+
+budget:
+  max_concurrent_runs: 3
+  max_parallel_builders: 4
+  e2e_in_worktree: false
+
+ranker:
+  cmd: null                      # e.g. "bun scripts/rank.ts" reading JSON on stdin
+
+laws:
+  - "Migrations that auto-run on production are additive only: no DROP, TRUNCATE or DELETE."
+  - "No raw colour values outside the design tokens file."
+  - "Surface-facing copy never says 'LLM'."
+  - "UI controls come from frontend/src/lib/ui; never re-implement one on a page."
+
+privacy:
+  identifier_patterns:
+    - '\b[A-Z]{2}\d{6}\b'        # this domain's account-number shape
+
+human:
+  tests_on: staging
+  remote_access: <your tunnel command> --port {frontend}

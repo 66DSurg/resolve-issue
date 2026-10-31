@@ -1,0 +1,27 @@
+# Running the loop with the Agent tool (no Workflow tool)
+
+This is the same pipeline as `templates/workflow.js`, driven by you, the main loop, using the Agent (Task) tool. Copy the prompts from the template's prompt functions. They are plain text and work unchanged. Build the shared preamble once, from the profile, and paste it at the end of every prompt [OR-7].
+
+Where the harness supports it, run each subagent in the background, so the conversation stays free [OR-2].
+
+## Steps
+
+1. **Diagnose.** Launch 1 diagnoser (small) or 2 on different angles (medium and up) in ONE message, so they run in parallel [DG-12]. Use the diagnose prompt, the strongest model and high effort [DG-6]. Ask each to end with the JSON in `references/diagnosis.md` §6.
+   - If any diagnosis returns `decision_required`, STOP and show the human the menu [SP-11].
+2. **Spec.** Run 1 agent with both diagnoses pasted verbatim. It writes `spec.md` and returns the SPEC JSON.
+3. **Plan.** Run 1 agent. It writes `plan.md` and returns the task list as JSON. Parse that list, and from here on iterate over it, never over a list you typed [PL-3].
+4. **Symptom check.** Run 1 fresh agent with the fit prompt. If the verdict is not `reported`, go back to step 1 with what you learned [PL-1].
+5. **Build in waves.** Keep these in a scratch file, `run-state.json`: `done`, `failed`, `remaining`.
+   - Ready = remaining tasks whose `depends_on` are all done, or are ids not in the plan. If none are ready, take the first remaining task alone [OR-8].
+   - From the ready tasks, take a wave whose `files` are pairwise disjoint, up to `max_parallel_builders` [PL-4, SZ-2]. A task whose dependency failed is `blocked`, so do not build it.
+   - Launch the wave's builders in ONE message (parallel).
+6. **Verify each task** as soon as its builder returns, with a FRESH agent (never the builder's context) running the verifier prompt [VF-1]. A missing or garbled verdict means re-verify, never pass [OR-9].
+7. **Repair.** On rejection, launch a repair agent one tier up from build, with `unfinished_work` verbatim. Then re-verify. Do at most 3 rounds, then mark the task failed [VF-5].
+8. **Completeness.** Run 1 agent to cross-check the plan's units against the tree, and run a completion build for exactly the missing units [VF-13, OR-10].
+9. **Gates.** Run 1 agent with the gates prompt [TG-6]. Then re-run the gate commands yourself before you believe the result [VF-10].
+10. **Docs.** Run 1 agent. If it updated docs, run 1 verifier on the doc claims [VF-6].
+11. **Audit and summary.** Do SKILL.md Step 4, then Step 5. Stop.
+
+## Without any subagents
+
+Run the same steps yourself, in order, writing each stage's output to a file before you start the next one. Then read that file as the next stage's input, so the hand-offs stay verbatim [OR-1]. For every verify step, start from the diff and the spec, not from your memory of building it, and assume your own work is wrong until a command proves otherwise. Self-verification is weaker than a fresh agent, so say in the summary that the verification was done in the same context [CM-3].
