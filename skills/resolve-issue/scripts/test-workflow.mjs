@@ -463,3 +463,21 @@ async function run({
   assert.match(res.summary, /Side issues to file: 2 separate, 1 bundle of 2, 0 comments/)
 }
 console.log('workflow template: all dry-run checks passed')
+
+// a diagnosis data-loss menu stops before the spec; once the human answers, the menu reaches the spec instead of stopping again forever [SP-11, SP-19]
+{
+  const menu = 'A) delete the stale upload; B) keep it; C) leave as is'
+  const stop = await run({ diagExtra: { decision_required: menu } })
+  assert.equal(stop.res.status, 'decision_required')
+  assert.equal(stop.res.stage, 'diagnose')
+  assert.ok(!stop.calls.some((c) => c.label === 'spec'), 'no spec before the human answers')
+  const go = await run({ diagExtra: { decision_required: menu }, extra: { decisions: ['A: delete the stale upload'] } })
+  assert.notEqual(go.res.status, 'decision_required', 'an answered menu must not stop the run again')
+  const spec = go.calls.find((c) => c.label === 'spec')
+  assert.ok(spec, 'the spec runs once the human answered')
+  assert.match(spec.prompt, /\[0\] A: delete the stale upload/)
+  assert.match(spec.prompt, /settle it ONLY from the human decisions/)
+  const again = await run({ diagExtra: { decision_required: menu }, extra: { decisions: ['A'] }, specExtra: { decision_required: menu } })
+  assert.equal(again.res.status, 'decision_required', 'the spec can still re-raise an unsettled menu')
+}
+console.log('diagnosis decision gate: ok')

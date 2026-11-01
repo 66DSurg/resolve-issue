@@ -455,9 +455,9 @@ If the change contradicts an ADR, write "Contradicts ADR-NNNN … but worth reop
 Prefer the fix that works with already-deployed state. Delete low-value broken paths rather than repairing them. Use glossary terms.
 If the change alters a shared component's default or behaviour, walk EVERY caller's flow (not just its import) and fill caller_flows: caller, flow before, flow after, intended yes|no|unsure. A row the report, spec and ADRs do not settle is "unsure"; never assume it [SP-17].
 Set user_visible=true when the change alters what a user sees on any screen, and list each affected screen and state (locked, loading, empty, error where they apply) in view_targets.
-If the change alters what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs), set privacy_security_change=true and add one privacy_security_rows row per surface.
+If the change alters what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs), or what goes to a third party or error reporting (telemetry, Sentry-like services), set privacy_security_change=true and add one privacy_security_rows row per surface.
 That is ALWAYS the human's decision: never yours, never a ranker's, however confident. A row's decision_ref is the index of the human decision below that settles it, else null [SP-18].
-Human decisions for this run (verbatim, by index):
+If a diagnosis raised a decision_required menu (destructive or data-loss-sensitive), settle it ONLY from the human decisions below: spec the option they chose and cite its index; if none of them settles it, return decision_required with the menu again [SP-11, SP-19].\nHuman decisions for this run (verbatim, by index):
 ${DECISIONS.length ? DECISIONS.map((d, i) => `  [${i}] ${d}`).join('\n') : '  (none)'}`
 
 const PLAN_RULES = `Plan rules: the plan is where each build task's code is written. Put ACTUAL code and exact signatures in it. Banned: "TBD", "add appropriate handling", "similar to Task N".
@@ -1025,7 +1025,9 @@ if (A.resumeFrom === 'build') {
   if (!result.diagnoses.length) return finish(Object.assign(result, { status: 'failed', stage: 'diagnose', reason: 'all diagnosers died' }))
   for (const d of result.diagnoses) for (const n of d.packs || []) PACKS.add(n)
   const decision = result.diagnoses.find((d) => d.decision_required)
-  if (decision) return finish(Object.assign(result, { status: 'decision_required', decision_required: decision.decision_required })) // [SP-11]
+  // A diagnosis menu stops the run until the human answers. Diagnosis never sees DECISIONS (and is served from cache on resume),
+  // so once answers exist the menu goes on to the spec, which sees both and re-raises decision_required if they don't settle it [SP-11, SP-19].
+  if (decision && !DECISIONS.length) return finish(Object.assign(result, { status: 'decision_required', stage: 'diagnose', decision_required: decision.decision_required })) // [SP-11]
   if (A.stopAfter === 'diagnose') return finish(Object.assign(result, { status: 'stopped', stage: 'diagnose' }))
 
   if (SMALL) {
@@ -1054,7 +1056,7 @@ if (A.resumeFrom === 'build') {
     const open = psRows.filter((x) => !decided.some((d) => d.surface === (x && x.surface)))
     return finish(Object.assign(result, {
       status: 'decision_required', stage: 'spec',
-      decision_required: 'This change alters privacy or security behaviour (what shows when locked or logged out, or how long data lives). Decide each row, then relaunch with the answers in decisions:\n'
+      decision_required: 'This change alters privacy or security behaviour (screen or DOM while locked, data lifetime, telemetry or third-party egress, or access; each row names its surface). Decide each row, then relaunch with ONLY the answers added to decisions [OR-28]:\n'
         + (open.length ? open.map((x) => `- ${x.surface}: before "${x.before}"; after "${x.after}". Intended?`).join('\n') : '- (the spec named no surface: which screens or data change?)'),
     }))
   }

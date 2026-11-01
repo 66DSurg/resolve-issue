@@ -7,7 +7,7 @@
     {
       "name": "resolve-issue",
       "description": "Take one issue from report to a verified branch, then stop.",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "author": { "name": "Biswajit Dutta Baruah", "url": "https://github.com/66DSurg" },
       "source": "./",
       "category": "development"

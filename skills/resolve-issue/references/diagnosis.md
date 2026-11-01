@@ -136,3 +136,5 @@ If evidence contradicts the ranking, evidence wins: say so.
 `evidence` holds measured values only. When every diagnosis is high-confidence with measured evidence, the run skips the symptom check, so never pad it with reasoning [DG-8]. `packs` switches on the matching files in `references/packs/` for the rest of the run.
 
 `decision_required` is a menu of options when the fix is destructive or loses data. For each option it says what survives and what is lost, and the run stops so the human can choose [SP-11].
+
+**Probes.** Write throwaway probes under the scratch dir, or delete them before returning, and list any left behind [DG-30].
