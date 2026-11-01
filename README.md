@@ -90,6 +90,7 @@ In Claude Code with the Workflow tool, `skills/resolve-issue/scripts/stamp-workf
 | version bump, tag, release, deploy | you, done in the main session, never inside a run |
 | repo settings, secrets, CI triggers | you |
 | closing the issue | after it reaches production and the reporter confirms |
+| a decision point inside a run | the run's decide step when not critical and its recommendation and the ranker agree (max 3, listed for review); otherwise you. `decisions.auto: false` = always you |
 
 Agents never get production access, never write sensitive identifiers into issues, commits or docs, and never weaken a test to go green.
 

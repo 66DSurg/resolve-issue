@@ -91,6 +91,7 @@ human: {tests_on: staging}
 #   spec: {model: null, effort: high}
 #   plan: {model: null, effort: high}
 #   build: {model: <mid>, effort: medium}
+#   decide: {model: null, effort: high}
 #   verify: {model: null, effort: high}
 #   repair: {model: null, effort: high}   # one tier above build
 #   gates: {model: <mid>, effort: medium}
@@ -102,7 +103,11 @@ human: {tests_on: staging}
 #   max_parallel_builders: 4
 #   e2e_in_worktree: false        # true only if it needs no shared resources
 # ranker:
-#   cmd: <command reading JSON on stdin, or null for an explicit in-prompt ranking>
+#   cmd: <command reading JSON on stdin, or null for an explicit in-prompt ranking; null turns auto-decisions off>
+# decisions:                      # the decide step [SP-20]
+#   auto: true                    # false = always ask the human
+#   margin: 0.2                   # p_top - p_second for AUTO
+#   critical: ['<extra criterion that always goes to the human>']
 # laws: ["<project NON-NEGOTIABLE, numbered for verifiers>"]
 # privacy:
 #   identifier_patterns: ['<regex for this domain's identifiers>']

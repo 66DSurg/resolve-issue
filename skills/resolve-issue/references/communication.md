@@ -26,7 +26,9 @@ The human may be reading on a phone, between other work, with no time for transc
 
 ## The end-of-run summary
 
-The run renders this from its own data, with no model in the loop, and the main loop corrects it after the audit. Keep it short enough to read on a phone [CM-7]. Findings come from the run's merged list, defects and test gaps first, never bookkeeping first [VF-31].
+The run renders this from its own data, with no model in the loop, and the main loop corrects it after the audit. Findings come from the run's merged list, defects and test gaps first, never bookkeeping first [VF-31].
+
+**Terse.** The summary says four things: the result, what changed for the user, the checks, the next step. No prose padding: no recap of the process, no restated plan, no adjectives, no "I". The whole summary is at most 20 lines and about 1,500 characters; a line that does not change what the human does next goes [CM-7]. Auto-decisions are listed for review after the fact [SP-20]. Insights are at most 4 bullets, each computed from the result, never written by a model.
 
 ```
 <issue id> <title>: <verified | partially verified | failed>
@@ -37,9 +39,12 @@ Gates: typecheck ✓ lint ✓ unit 412/412 ✓ e2e skipped (shared DB; run at me
 Findings: defects <n, fixed or open>; test gaps <n>; doc/copy <n>; follow-ups filed <n>
 View: <n> screenshot sets in <scratch>/<issue>/screenshots; branch defects open <n> (user-visible changes only)
 Side issues filed: #… #… (separate), #… (bundle of <n>), comments on #… | not filed (auto_file off)
-Commits (git log <base>..HEAD):
-  abc1234 <subject>
-  def5678 <subject>
+Auto-decided (review): [<point>] <option> p=… (only when the run auto-decided)
+Insights:
+- Cause class: <class>, at <seam>
+- Effort: most in <stage> (<spent>); repairs <n>; verifier rejections <n>
+- Auto-decisions: <n> (top p …) | Watch: <flaky matched, superseded findings, decision stop> | Side issues by kind: <kind n>
+Commits (git log <base>..HEAD): abc1234 def5678
 Check by hand: <the reporter's exact flow, device, data>.
 Open: <follow-up issues filed: #…> | <pending real-device check>
 Next: your yes to merge; then a separate yes to push.

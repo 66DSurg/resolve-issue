@@ -77,7 +77,7 @@ Entry: report files, profile, ruled-out and suspect lists, and prior attempts.
 Agents: 1 for a small issue, 2 on different angles for medium and up [DG-12]. Use the strongest model at high effort [DG-6, CO-1].
 Work: follow `references/diagnosis.md`. Trace the path, list the candidates, rank them, probe, and confirm. Fix nothing.
 Output: structured diagnosis (method, findings, evidence, candidates with verdicts, ruled_out, open_questions, confidence, and the domain packs whose trigger the issue meets) [DG-9]. Evidence holds measured values only, because an empty list is what tells the run the repro was not measured.
-Exit: either a confirmed cause, or an explicit statement of which candidates remain and what measurement would settle them. If the change is destructive, the exit is a decision menu, and the run stops for the human [SP-11].
+Exit: either a confirmed cause, or an explicit statement of which candidates remain and what measurement would settle them. If the change is destructive, the exit is a decision menu. The decide step settles it when it is not critical and the recommendation and the ranker agree with margin; otherwise the run stops for the human [SP-11, SP-20].
 
 ## 4. Stage 2: spec
 
@@ -153,5 +153,7 @@ These rules apply if the project runs bots for triage, queue ranking or housekee
 - **Map role names to real labels in one table.** This skill's canonical roles are the `triage` skill's five (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix) plus in-progress and keep-open. They map to the repo's real strings through `labels:` in the profile, or through the repo's `docs/agents/` triage-labels doc [OR-25].
 - **Ranking the queue.** "Which issue next?" is the `triage` skill's question when it is installed; these rules are the fallback. Include the untriaged items that the default order cannot rank [PL-11]. Re-rank every one to three resolved items in a long campaign [PL-12]. Track every follow-up as a real issue [PL-13]. Deferred work stays rankable at a low priority and is never hidden [SP-2]. Asked "what next?", rank the queue and act on a clear winner. See `references/communication.md` [CM-6]. When the order surprises the human, audit its inputs (labels, priority fields, the rubric) before defending it [PL-14].
 - **Surface-only triage.** Triage classifies, labels and ranks. It never fixes code or opens PRs [HG-13]. The pinned queue issue and anything labelled keep-open are protected from automated closing [HG-14].
+
+**Decision points.** Every stop for a decision first runs one decide agent (options, recommendation, the profile ranker's distribution, criticality); code makes it AUTO or a stop, at most 3 AUTO per run, and `result.auto_decisions` lists them for the audit [SP-20].
 
 **Resuming after a decision.** Relaunch with `resumeFromRunId` and change only `decisions`; any other arg change re-runs the stages whose prompts include it [OR-28].

@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 
-const src = readFileSync(new URL('../templates/workflow.js', import.meta.url), 'utf8').replace('export const meta', 'const meta')
+const src = readFileSync(process.env.WF_PATH || new URL('../templates/workflow.js', import.meta.url), 'utf8').replace('export const meta', 'const meta') // WF_PATH: a mutated copy, for negative controls
 const AsyncFn = Object.getPrototypeOf(async () => {}).constructor
 const wf = new AsyncFn('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', 'budget', src)
 const H = (s) => Buffer.from(s).toString('hex') // a mock commit id that is a valid SHA
@@ -32,7 +32,7 @@ async function run({
   size = 'medium', tasks = TASKS, measured = false, docsImpact = 'none', gatesCommits = [], gatesPass = true, extra = {},
   serialReason = 'T4 and T5 form a cycle', replanTasks = null, buildCommits = null, verdictExtra = () => ({}), callerFlows = [],
   specExtra = {}, view = () => ({ screenshots: [], findings: [], processes_left: 0 }), harvest = () => ({ side_issues: [], dropped: [] }),
-  gatesGreen = true, diagExtra = {},
+  gatesGreen = true, diagExtra = {}, decide = null, specSeq = null,
 } = {}) {
   const calls = []
   const seen = {}
@@ -44,10 +44,11 @@ async function run({
     calls.push({ label, model: o.model, prompt })
     spent += 1000
     if (label.startsWith('diagnose')) return { method: 'm', findings: 'f', evidence: measured ? ['probe: 0 of 3 rows rendered'] : [], candidates: [{ cause: 'stale cache', rank_p: 0.7, verdict: 'confirmed', evidence: 'e' }], ruled_out: [], open_questions: [], confidence: 'high', decision_required: null, ...diagExtra }
-    if (label === 'spec') return Object.assign({ spec_path: 's.md' }, specFields)
+    if (label.startsWith('decide')) { if (!decide) throw new Error('unexpected decide call ' + label); return decide(label, prompt) }
+    if (label === 'spec' || /^spec #\d+$/.test(label)) return Object.assign({ spec_path: 's.md' }, specFields, specSeq ? specSeq(Number((label.split('#')[1]) || 1), prompt) : {})
     if (label === 'plan') return { plan_path: 'p.md', tasks, serial_reason: serialReason }
     if (label === 'replan') return replanTasks ? { plan_path: 'p.md', tasks: replanTasks, serial_reason: null } : { plan_path: 'p.md', tasks, serial_reason: 'each task needs the previous one\'s code' }
-    if (label === 'spec plan' || label === 'load plan') return Object.assign({ spec_path: null, plan_path: 'p.md', tasks }, specFields)
+    if (label === 'spec plan' || /^spec plan #\d+$/.test(label) || label === 'load plan') return Object.assign({ spec_path: null, plan_path: 'p.md', tasks }, specFields)
     if (label === 'symptom check') return { options: FITS[fit], verdict: 'reported', reason: 'r' } // the model's own verdict is ignored
     if (label.startsWith('view #')) return view(Number(label.split('#')[1]))
     if (label === 'harvest') return harvest(prompt)
@@ -394,7 +395,7 @@ async function run({
   assert.equal(stop.res.stage, 'spec')
   assert.match(stop.res.decision_required, /names stay under a translucent overlay/)
   assert.ok(!stop.calls.some((c) => c.label === 'plan'))
-  assert.match(stop.calls.find((c) => c.label === 'spec').prompt, /never a ranker's/)
+  assert.match(stop.calls.find((c) => c.label === 'spec').prompt, /Never settle a row yourself/)
   const bare = await run({ specExtra: { privacy_security_change: true } })
   assert.equal(bare.res.status, 'decision_required', 'a privacy change with no rows still stops')
   const fake = await run({ specExtra: { privacy_security_change: true, privacy_security_rows: [Object.assign({}, row, { decision_ref: 3 })] }, extra: { decisions: ['unmount on lock'] } })
@@ -476,8 +477,120 @@ console.log('workflow template: all dry-run checks passed')
   const spec = go.calls.find((c) => c.label === 'spec')
   assert.ok(spec, 'the spec runs once the human answered')
   assert.match(spec.prompt, /\[0\] A: delete the stale upload/)
-  assert.match(spec.prompt, /settle it ONLY from the human decisions/)
+  assert.match(spec.prompt, /settle it ONLY from the decisions below/)
   const again = await run({ diagExtra: { decision_required: menu }, extra: { decisions: ['A'] }, specExtra: { decision_required: menu } })
   assert.equal(again.res.status, 'decision_required', 'the spec can still re-raise an unsettled menu')
 }
 console.log('diagnosis decision gate: ok')
+
+// ---------- auto-decide [SP-20] ----------
+const RANKER = { ranker: { cmd: 'jev' } }
+const OPT_A = 'A: delete the stale upload'
+const MENU = 'A) delete the stale upload; B) keep it'
+const verdict = (o = {}) => Object.assign({ question: 'q', options: [OPT_A, 'B: keep it'], recommendation: OPT_A, recommendation_reason: 'nothing references it',
+  ranking: { top: OPT_A, p_top: 0.75, p_second: 0.25, raw: 'A 0.75 | B 0.25' }, critical: false, critical_reason: null, weakens_protection: false }, o)
+const counting = (o) => { const f = (label) => { f.calls.push(label); return verdict(typeof o === 'function' ? o(label) : o) }; f.calls = []; return f }
+const bullets = (summary) => { const l = summary.split('\n'); const i = l.indexOf('Insights:'); return i < 0 ? [] : l.slice(i + 1).filter((x, j, a) => a.slice(0, j + 1).every((y) => y.startsWith('- '))) }
+
+// rec = ranker top, margin 0.5, not critical: the run continues, the spec sees the AUTO decision, the summary lists it
+{
+  const decide = counting({})
+  const { res, calls } = await run({ diagExtra: { decision_required: MENU }, extra: { profile: RANKER }, decide })
+  assert.equal(res.status, 'verified', 'an auto-decided menu does not stop the run')
+  assert.equal(res.auto_decisions.length, 1)
+  assert.deepEqual(decide.calls, ['decide diagnose'])
+  assert.match(calls.find((c) => c.label === 'spec').prompt, /\[0\] AUTO \(rec\+ranker agree, p=0\.75\): A: delete the stale upload/)
+  assert.match(res.summary, /Auto-decided \(review\): \[diagnose\] A: delete the stale upload p=0\.75/)
+}
+// the recommendation and the ranker disagree: stop, with options, recommendation, ranking and why
+{
+  const { res, calls } = await run({ diagExtra: { decision_required: MENU }, extra: { profile: RANKER }, decide: counting({ ranking: { top: 'B: keep it', p_top: 0.7, p_second: 0.3, raw: 'B 0.7' } }) })
+  assert.equal(res.status, 'decision_required')
+  assert.match(res.decision_required, /Options: 1\) A: delete the stale upload; 2\) B: keep it/)
+  assert.match(res.decision_required, /Recommended: A: delete the stale upload/)
+  assert.match(res.decision_required, /Ranker: top "B: keep it" p=0\.7/)
+  assert.match(res.decision.not_auto, /disagree/)
+  assert.equal(res.auto_decisions.length, 0)
+  assert.ok(!calls.some((c) => c.label === 'spec'))
+}
+// a thin margin (0.1) stops
+{
+  const { res } = await run({ diagExtra: { decision_required: MENU }, extra: { profile: RANKER }, decide: counting({ ranking: { top: OPT_A, p_top: 0.55, p_second: 0.45, raw: '' } }) })
+  assert.equal(res.status, 'decision_required')
+  assert.match(res.decision.not_auto, /thin margin/)
+}
+// critical stops even when rec and ranker agree; the criteria list is profile-extensible
+{
+  const decide = counting({ critical: true, critical_reason: 'money, billing or pricing' })
+  const { res, calls } = await run({ diagExtra: { decision_required: MENU }, extra: { profile: Object.assign({ decisions: { critical: ['touches the audit log'] } }, RANKER) }, decide })
+  assert.equal(res.status, 'decision_required')
+  assert.match(res.decision.not_auto, /^critical: money/)
+  const dp = calls.find((c) => c.label === 'decide diagnose').prompt
+  assert.ok(/encryption keys or vault crypto/.test(dp) && /security weakening/.test(dp) && /touches the audit log/.test(dp))
+}
+// privacy rows: auto only without a weakening; a weakening is critical in code, whatever the agent says
+{
+  const row = { surface: 'record page while locked', before: 'page torn down', after: 'page unmounted sooner', decision_ref: null }
+  const settle = (n) => (n > 1 ? { privacy_security_rows: [Object.assign({}, row, { decision_ref: 0 })] } : {})
+  const weak = await run({ specExtra: { privacy_security_change: true, privacy_security_rows: [row] }, specSeq: settle, extra: { profile: RANKER }, decide: counting({ weakens_protection: true }) })
+  assert.equal(weak.res.status, 'decision_required')
+  assert.equal(weak.res.stage, 'spec')
+  assert.match(weak.res.decision.not_auto, /weakens protection/)
+  assert.ok(!weak.calls.some((c) => c.label === 'plan'))
+  const ok = await run({ specExtra: { privacy_security_change: true, privacy_security_rows: [row] }, specSeq: settle, extra: { profile: RANKER }, decide: counting({}) })
+  assert.equal(ok.res.status, 'verified', 'a non-weakening privacy row with rec+ranker agreement is auto-decided')
+  assert.ok(ok.calls.some((c) => c.label === 'spec #2'), 'the spec re-runs once with the decision')
+  assert.match(ok.calls.find((c) => c.label === 'spec #2').prompt, /\[0\] AUTO/)
+}
+// the cap: at most 3 auto-decisions per run; the 4th stops without a decide agent
+{
+  const four = ['T1', 'T2', 'T3', 'T4'].map((id) => ({ id, title: id, files: [`${id}.ts`], depends_on: [], instructions: 'x', acceptance: 'y' }))
+  const decide = counting({})
+  const { res } = await run({ tasks: four, serialReason: null, extra: { profile: RANKER }, decide, verdictExtra: (id, n) => (n === 1 ? { privacy_security_change: `${id} keeps names in the DOM` } : {}) })
+  assert.equal(res.auto_decisions.length, 3)
+  assert.equal(decide.calls.length, 3)
+  const stopped = res.tasks.filter((t) => t.status === 'decision_required')
+  assert.equal(stopped.length, 1)
+  assert.match(res.decision_required, /cap of 3 auto-decisions/)
+  assert.equal(res.status, 'decision_required')
+}
+// profile.decisions.auto=false restores always-ask: no decide agent, today's stop verbatim
+{
+  const decide = counting({})
+  const { res } = await run({ diagExtra: { decision_required: MENU }, extra: { profile: Object.assign({ decisions: { auto: false } }, RANKER) }, decide })
+  assert.equal(res.status, 'decision_required')
+  assert.equal(res.decision_required, MENU)
+  assert.equal(decide.calls.length, 0)
+}
+// a task's behaviour-choice stop, auto-decided, continues repair with the chosen behaviour
+{
+  const ve = (id, n) => (id === 'T1' && n < 4 ? { passed: false, failing_test: 'tap outside', failure_cause: 'undecided discard', behaviour_choice: true } : {})
+  const { res, calls } = await run({ verdictExtra: ve, extra: { profile: RANKER }, decide: counting({}) })
+  assert.equal(res.tasks.find((t) => t.id === 'T1').status, 'verified')
+  assert.match(calls.find((c) => c.label === 'repair T1 #3').prompt, /Decided \(AUTO, run decisions\): A: delete the stale upload/)
+}
+// Insights: at most 4 bullets, each computed from data
+{
+  const { res } = await run({ diagExtra: { decision_required: MENU }, extra: { profile: RANKER }, decide: counting({}), specExtra: { cause_class: 'state' } })
+  const b = bullets(res.summary)
+  assert.ok(b.length >= 3 && b.length <= 4, `insights: ${b.join(' | ')}`)
+  assert.equal(b[0], '- Cause class: state, at h')
+  assert.match(b[1], /^- Effort: most in \w+ \(\d+ spent\); repairs 0; verifier rejections 0$/)
+  assert.equal(b[2], '- Auto-decisions: 1 (top p 0.75)')
+  // everything present: still 4 bullets, the watch line kept
+  const f = (id) => (id === 'T1' ? [{ severity: 'test-gap', finding: 'acceptance pending', until_stage: 'gates' }, { severity: 'follow-up', finding: 'x' }] : [])
+  const all = await run({ diagExtra: { decision_required: MENU }, extra: { profile: RANKER }, decide: counting({}), findings: f,
+    harvest: () => ({ side_issues: [{ title: 'Export page has no empty state', body: 'b', kind: 'ux', severity: 'minor', evidence: ['e.ts:1'], duplicate_of: null, bundle: true }], dropped: [] }) })
+  const ab = bullets(all.res.summary)
+  assert.equal(ab.length, 4)
+  assert.match(ab[3], /^- Watch: 1 superseded finding/)
+}
+// a visual defect left after one repair, auto-decided: one more repair with the choice, then one last look
+{
+  const branch = { cause: 'branch', severity: 'defect', kind: 'ux', finding: 'save button overlaps the footer', screenshots: ['/s/a.png'], file: 'a.ts' }
+  const { res, calls } = await run({ specExtra: { user_visible: true }, extra: { profile: RANKER }, decide: counting({}), view: (n) => ({ screenshots: [], findings: n < 3 ? [branch] : [], processes_left: 0 }) })
+  assert.match(calls.find((c) => c.label === 'repair view #2').prompt, /Decided \(AUTO, run decisions\): A: delete the stale upload/)
+  assert.ok(calls.some((c) => c.label === 'view #3'))
+  assert.equal(res.status, 'verified')
+}
+console.log('auto-decide and insights: ok')

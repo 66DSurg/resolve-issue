@@ -76,7 +76,7 @@ Checklist. Each item exists because a verifier once missed that class of defect 
 12. A gate is checked in both directions: it does not leak onto routes it should not cover, AND it covers every route it should [VF-12].
 13. None of the build pitfalls in section 2 appear in the diff.
 14. Each test drives the interface it names. A test that imports internals (private helpers, module internals no caller uses) is a `test-gap` finding [DG-14].
-15. **Privacy and security behaviour.** Does the diff change what is on screen or in the DOM when the app is locked or logged out, or how long data lives? Any such change that no human-decided spec row covers goes in `privacy_security_change`, and the task stops as `decision_required`, with no repair [SP-18].
+15. **Privacy and security behaviour.** Does the diff change what is on screen or in the DOM when the app is locked or logged out, or how long data lives? Any such change that no decided spec row or run decision covers goes in `privacy_security_change`. The decide step settles it when allowed (one repair applies the choice); otherwise the task stops as `decision_required`, with no repair [SP-18, SP-20].
 
 ## 4. Negative controls
 
@@ -120,7 +120,7 @@ Every non-blocking finding carries a severity: `defect` (wrong behaviour a user 
 - The repair prompt is: "A previous attempt was rejected. Fix exactly this:" followed by `unfinished_work`, verbatim.
 - A null verdict (the verifier died) means re-verify, never pass [OR-9].
 - After the third failure, report the task as failed, with the evidence.
-- **A behaviour choice stops the loop.** A failing verdict names `failing_test`, `failure_cause` and `behaviour_choice`. When the same test fails for the same cause after two repairs and the cause is an undecided product behaviour, the task stops as `decision_required` with the question for the human. No third repair [VF-5].
+- **A behaviour choice stops the loop.** A failing verdict names `failing_test`, `failure_cause` and `behaviour_choice`. When the same test fails for the same cause after two repairs and the cause is an undecided product behaviour, the decide step settles it if it may (the next repair implements the chosen behaviour); otherwise the task stops as `decision_required` with the question for the human. No third repair [VF-5, SP-20].
 
 **Re-triage "non-blocking" findings by severity**, from the merged list, defects and test gaps first. Several turn out to be real: a 500 where a 400 belonged, an empty input reaching a payment provider as an opaque 502, a silent fail-open, a page stuck on Loading [VF-11, VF-31].
 

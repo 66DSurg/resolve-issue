@@ -54,6 +54,7 @@ tiers:                           # references/cost.md
   spec: {model: null, effort: high}
   plan: {model: null, effort: high}
   build: {model: <mid>, effort: medium}
+  decide: {model: null, effort: high}   # judgment work: never stepped down
   verify: {model: null, effort: high}
   repair: {model: null, effort: high}   # one tier above build
   gates: {model: <mid>, effort: medium}
@@ -64,7 +65,11 @@ budget:
   max_parallel_builders: 4
   e2e_in_worktree: false
 ranker:
-  cmd: null                      # null = rank explicitly in the prompt
+  cmd: null                      # null = rank explicitly in the prompt; no ranker, no auto-decisions
+decisions:                       # the run's decide step [SP-20]
+  auto: true                     # false = every decision point stops for the human
+  margin: 0.2                    # p_top - p_second needed for AUTO
+  critical: []                   # more criteria on top of the defaults (crypto, deletion, money, legal, locked ADR, prod, weakening)
 commands:
   post_install: null             # codegen/sync after install; fresh and control worktrees run it [IS-16]
 env:

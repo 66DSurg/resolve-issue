@@ -30,7 +30,8 @@
 //   resumeFrom:   null | 'build',                // 'build' reads the committed plan at planPath and builds it
 //   scratchDir:   '/abs/scratch',                // OUTSIDE the worktree: logs → <scratchDir>/<issue>/logs, screenshots → .../screenshots [IS-19]
 //   openIssues:   [{ number: 12, title: '...', labels: ['bug'] }],  // fetched by the main loop with the tracker CLI; the harvest dedupes against it [OR-27]
-//   decisions:    [],                            // the human's answers to an earlier decision_required, verbatim; spec rows cite them by index [SP-18]
+//   decisions:    [],                            // the human's answers to an earlier decision_required, verbatim; spec rows cite them by index [SP-18].
+//                                                // The run appends its own AUTO entries here when its decide step settles a point [SP-20]
 // }
 // Returns a COMPACT result for the post-run audit [OR-18, OR-26]: status, root cause, a gates table,
 // the commit list, merged and deduped findings by severity [VF-31], follow-ups to file, per-stage
@@ -38,12 +39,15 @@
 // characters; full per-stage outputs stay in the run journal and in the spec and plan files.
 // When the spec says user_visible, a VIEW agent screenshots before/after and judges them (it builds nothing).
 // A final HARVEST stage turns side findings into issue drafts (side_issues, bundle_issue); the main loop files them.
+// Every decision point first goes to one DECIDE agent: options, its recommendation, the profile ranker's distribution and a
+// criticality call. Code decides whether it is AUTO (not critical, rec = ranker top, margin >= profile.decisions.margin);
+// at most AUTO_CAP per run, listed in result.auto_decisions. Anything else stops as decision_required, as before [SP-20].
 // Wall-clock time is not available here: the main loop records start and end in the run log.
 // The run ends at a verified branch. It never pushes, tags or releases [HG-1].
 
 export const meta = {
   name: 'resolve-issue-__ISSUE__',
-  description: 'Issue __ISSUE__: diagnose → spec → plan → parallel build → per-task adversarial verify/repair → gates (+ verify gates commits) → docs if affected → side-issue harvest. VIEW lens when user-visible. Stops at a verified branch.',
+  description: 'Issue __ISSUE__: diagnose → spec → plan → parallel build → per-task adversarial verify/repair → gates (+ verify gates commits) → docs if affected → side-issue harvest. VIEW lens when user-visible. Decision points auto-decided when not critical and rec = ranker top. Stops at a verified branch.',
   whenToUse: 'One tracker issue, after pre-flight, sizing and worktree setup are done in the main loop.',
   phases: [
     { title: 'Diagnose', detail: 'rank candidate causes, probe, confirm. No fixes' },
@@ -79,7 +83,18 @@ const SAME_CAUSE_ROUNDS = 2 // repairs after which an unchanged behaviour-choice
 const SCRATCH = A.scratchDir ? `${A.scratchDir}/${ISSUE.id}` : `${A.worktree}-scratch` // never inside the worktree [IS-19]
 const LOG_DIR = `${SCRATCH}/logs`
 const SHOT_DIR = `${SCRATCH}/screenshots`
-const DECISIONS = A.decisions || []
+const DECISIONS = (A.decisions || []).slice() // the run appends AUTO entries [SP-20]
+const DEC = Object.assign({ auto: true, margin: 0.2, critical: [] }, P.decisions || {})
+const AUTO_CAP = 3 // runaway guard: auto-decisions per run [SP-20]
+const CRITICAL = [ // any of these makes a decision the human's; profile.decisions.critical adds more [SP-20]
+  'encryption keys or vault crypto',
+  'irreversible deletion of user data NOT already mandated by a cited ADR or locked decision',
+  'money, billing or pricing',
+  'legal, consent or terms',
+  'contradicting a locked ADR',
+  'production data or production access',
+  'security weakening (less protection than today)',
+].concat(DEC.critical || [])
 const OPEN_ISSUES = A.openIssues || []
 const KINDS = ['bug', 'ux', 'a11y', 'perf', 'docs', 'infra', 'test']
 const SERIOUS = ['privacy', 'security', 'data-loss', 'broken-flow', 'wrong-state'] // each its own issue; anything else is 'minor' and bundled [OR-27]
@@ -209,6 +224,7 @@ const DIAG = {
 const SPEC_PROPS = {
   spec_path: { type: ['string', 'null'], description: 'null when the spec lives in the commit body' },
   root_cause: { type: 'string' },
+  cause_class: { type: 'string', enum: ['logic', 'state', 'data', 'contract', 'concurrency', 'config', 'environment', 'ui', 'missing-feature', 'other'], description: 'the root cause\'s class, for the summary insights' },
   shared_seam: { type: 'string' },
   mechanism_explains_reported_data: { type: 'boolean' },
   user_change: { type: 'string', description: 'one or two plain sentences: what changes for the user' },
@@ -233,7 +249,7 @@ const SPEC_PROPS = {
   privacy_security_change: { type: 'boolean', description: 'true when the change alters what is on screen or in the DOM when locked or logged out, or how long data lives (caches, storage, retention, logs) [SP-18]' },
   privacy_security_rows: {
     type: 'array',
-    description: 'when privacy_security_change: one row per surface. decision_ref is the index of the human decision in the run\'s decisions list that settles the row, else null. Never settled by you or a ranker [SP-18]',
+    description: 'when privacy_security_change: one row per surface. decision_ref is the index of the decision in the run\'s decisions list that settles the row, else null. Never settled by you [SP-18]',
     items: {
       type: 'object',
       properties: { surface: { type: 'string' }, before: { type: 'string' }, after: { type: 'string' }, decision_ref: { type: ['integer', 'null'] } },
@@ -335,7 +351,7 @@ const VERDICT = {
     failing_test: { type: ['string', 'null'], description: 'when failing: the test that fails' },
     failure_cause: { type: ['string', 'null'], description: 'when failing: its root cause, one sentence' },
     behaviour_choice: { type: 'boolean', description: 'true when the failure hinges on an undecided product behaviour, not a code fault [VF-5]' },
-    privacy_security_change: { type: ['string', 'null'], description: 'a change to what is on screen or in the DOM when locked or logged out, or to how long data lives, that no human-decided spec row covers: what changed, one sentence; else null [SP-18]' },
+    privacy_security_change: { type: ['string', 'null'], description: 'a change to what is on screen or in the DOM when locked or logged out, or to how long data lives, that no decided spec row and no run decision covers: what changed, one sentence; else null [SP-18]' },
     summary: { type: 'string' },
   },
   required: ['passed', 'checks', 'unfinished_work', 'code_defect', 'summary'],
@@ -423,6 +439,25 @@ const DOCS = {
   required: ['docs_impact', 'justification', 'files'],
 }
 
+const DECIDE = {
+  type: 'object',
+  properties: {
+    question: { type: 'string' },
+    options: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 4, description: '2 to 4 concrete, mutually exclusive options, each saying what changes, what survives and what is lost' },
+    recommendation: { type: 'string', description: 'the exact text of one option' },
+    recommendation_reason: { type: 'string' },
+    ranking: {
+      type: 'object',
+      properties: { top: { type: 'string', description: 'the ranker\'s top option, exact text' }, p_top: { type: 'number' }, p_second: { type: 'number' }, raw: { type: 'string', description: 'the ranker\'s output, verbatim' } },
+      required: ['top', 'p_top', 'p_second', 'raw'],
+    },
+    critical: { type: 'boolean' },
+    critical_reason: { type: ['string', 'null'], description: 'which critical criterion holds, else null' },
+    weakens_protection: { type: 'boolean', description: 'true when the recommended option leaves less privacy or security protection than the code at the base has' },
+  },
+  required: ['question', 'options', 'recommendation', 'recommendation_reason', 'ranking', 'critical', 'critical_reason', 'weakens_protection'],
+}
+
 // ---------- prompts ----------
 
 const diagPrompt = (angle) => `You are DIAGNOSING issue ${ISSUE.id}. Do not fix anything.
@@ -447,7 +482,7 @@ Delete throwaway probes; keep a reproduction only if it is a proper regression t
 Real problems you meet that are NOT this issue's cause go in side_findings (severity, one sentence with file:line); never chase them.
 ${preamble()}`
 
-const SPEC_RULES = `Spec rules: fix the root cause at the shared seam every caller routes through, with the smallest change that fully resolves the REPORTED symptom.
+const specRules = () => `Spec rules: fix the root cause at the shared seam every caller routes through, with the smallest change that fully resolves the REPORTED symptom.
 Include: exact user-facing copy; what changes for the user, in plain words (user_change); tests: the regression test is the diagnosis reproduction, at the highest level that still reproduces the reported symptom, and fails before the fix; name the interface each test drives (page, route, CLI, public function); an acceptance fixture shaped like the reporter's anonymised data; docs impact ("none" plus a real justification, or the files);
 EXPLICITLY OUT OF SCOPE (adjacent cleanup becomes follow-up issues, listed by title); what agents cannot validate (manual checks); honest risks; assumptions made instead of asking.${A.agentBriefPath ? `\nThe agent brief at ${A.agentBriefPath} is input: its acceptance criteria and out-of-scope list carry into the spec (the "Agent brief:" line).` : ''}
 If no diagnosed mechanism produces the symptom on the reported data, say so (mechanism_explains_reported_data=false) and specify the measurement needed or a fix correct regardless plus in-product evidence capture.
@@ -456,8 +491,9 @@ Prefer the fix that works with already-deployed state. Delete low-value broken p
 If the change alters a shared component's default or behaviour, walk EVERY caller's flow (not just its import) and fill caller_flows: caller, flow before, flow after, intended yes|no|unsure. A row the report, spec and ADRs do not settle is "unsure"; never assume it [SP-17].
 Set user_visible=true when the change alters what a user sees on any screen, and list each affected screen and state (locked, loading, empty, error where they apply) in view_targets.
 If the change alters what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs), or what goes to a third party or error reporting (telemetry, Sentry-like services), set privacy_security_change=true and add one privacy_security_rows row per surface.
-That is ALWAYS the human's decision: never yours, never a ranker's, however confident. A row's decision_ref is the index of the human decision below that settles it, else null [SP-18].
-If a diagnosis raised a decision_required menu (destructive or data-loss-sensitive), settle it ONLY from the human decisions below: spec the option they chose and cite its index; if none of them settles it, return decision_required with the menu again [SP-11, SP-19].\nHuman decisions for this run (verbatim, by index):
+Never settle a row yourself, however confident: a row's decision_ref is the index of the decision below that settles it, else null. The run's decide step, not you, may settle it [SP-18, SP-20].
+If a diagnosis raised a decision_required menu (destructive or data-loss-sensitive), settle it ONLY from the decisions below: spec the option chosen and cite its index; if none of them settles it, return decision_required with the menu again [SP-11, SP-19].
+Set cause_class to the root cause's class in one word.\nDecisions for this run (verbatim, by index; "AUTO (…)" entries were taken by the run's decide step when its recommendation and the ranker agreed):
 ${DECISIONS.length ? DECISIONS.map((d, i) => `  [${i}] ${d}`).join('\n') : '  (none)'}`
 
 const PLAN_RULES = `Plan rules: the plan is where each build task's code is written. Put ACTUAL code and exact signatures in it. Banned: "TBD", "add appropriate handling", "similar to Task N".
@@ -472,7 +508,7 @@ const specPrompt = (diags) => `You are writing the SPEC for issue ${ISSUE.id}. W
 Diagnoses (verbatim, ${diags.length} independent angle(s)). Where they disagree, read the code yourself and decide:
 ${JSON.stringify(diags, null, 2)}
 
-${SPEC_RULES}
+${specRules()}
 Commit the spec file (explicit path).
 ${preamble()}`
 
@@ -489,7 +525,7 @@ ${SPEC_IN_COMMIT
     ? 'Write NO spec file. The spec goes in the root-fix task\'s commit body: root cause and how it was confirmed, shared seam, the regression test and the interface it drives, out of scope, docs impact. Put that commit body in the task\'s commit step. Return spec_path=null.'
     : `Write the spec to ${A.specPath} (templates/spec.md format) and commit it.`}
 Write the plan to ${A.planPath} (templates/plan.md format) and commit it. Return the spec fields and the plan units together.
-${SPEC_RULES}
+${specRules()}
 ${PLAN_RULES}
 ${preamble()}`
 
@@ -543,7 +579,7 @@ Checklist (record every item in checks):
 10. Claims in docs and comments are true. 11. The feature is reachable from the UI. 12. Any gate is correct in both directions (no leak, full coverage).
 13. None of the build pitfalls in ${SKILL}/references/verification.md section 2 (stripped fields, orphaned triggers, cache-masked indicators, unhandled promise chains, route order, effect loops, silent not_configured, hardcoded formats, and the rest).
 14. Each test drives the interface it names. A test that imports internals (private helpers, module internals no caller uses) is a test-gap finding.
-15. Privacy and security behaviour [SP-18]: does the diff change what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs)? Human-decided rows from the spec: ${JSON.stringify(decidedRows())}. Any such change those rows do not cover goes in privacy_security_change, in one sentence; else null.
+15. Privacy and security behaviour [SP-18]: does the diff change what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs)? Decided rows from the spec: ${JSON.stringify(decidedRows())}. Run decisions (human or AUTO): ${JSON.stringify(DECISIONS)}. Any such change those rows do not cover goes in privacy_security_change, in one sentence; else null.
 A finding that is true only until a later stage runs ("acceptance pending", "not yet committed", "gates not run") names that stage in until_stage [VF-32].
 Kill any server you start. code_defect=true ONLY for real logic defects, not bookkeeping. unfinished_work must name files and symbols precisely.
 Put everything else you noticed in non_blocking_findings, each with a severity (defect | test-gap | doc-copy | follow-up | bookkeeping) and the file it is about. Tag honestly: a reachable wrong behaviour (a page stuck loading, a raw 500, misleading copy) is a defect or doc-copy even if it is outside this task [VF-31, VF-11].
@@ -561,10 +597,10 @@ For each screen also capture the states the spec names among locked, loading, em
 Screenshots go in ${SHOT_DIR}/round-${round}/ as <screen>-<state>-<viewport>-<before|after>.png. That directory is outside the worktree; never copy a screenshot into it or commit one [IS-19].
 3. Judge the AFTER shots against the design docs (${[].concat((P.docs && P.docs.design) || []).join(', ') || 'none in the profile'}) and ${SKILL}/references/packs/ux.md, and compare them with BEFORE.
 4. Each finding: cause "branch" when the BEFORE shot does not show it and AFTER does (this branch caused it), "pre-existing" when BEFORE shows it too; a severity (defect = a visual defect a user would hit: overlap, clipping, unreadable text, a blank or stuck state, a control out of reach); a kind; the screenshot paths; the file if you can name it.
-${prior && prior.length ? `Round 1 found these branch defects and a repair was made. Check that each is gone:\n${list(prior.map((f) => f.finding))}\n` : ''}Report processes_left from ps after cleanup; it must be 0.
+${prior && prior.length ? `Round ${round - 1} found these branch defects and a repair was made. Check that each is gone:\n${list(prior.map((f) => f.finding))}\n` : ''}Report processes_left from ps after cleanup; it must be 0.
 ${preamble()}`
 
-const viewRepairPrompt = (defects, files) => `You are REPAIRING visual defects that this branch caused in issue ${ISSUE.id}. An independent VIEW agent compared before and after screenshots. Fix EXACTLY these:
+const viewRepairPrompt = (defects, files, decision) => `You are REPAIRING visual defects that this branch caused in issue ${ISSUE.id}. An independent VIEW agent compared before and after screenshots.${decision ? ` Decided (AUTO, run decisions): ${decision}. Apply exactly this.` : ''} Fix EXACTLY these:
 ${defects.map((f) => `- ${f.finding} (screenshots: ${(f.screenshots || []).join(', ') || 'none'})`).join('\n')}
 Files you may touch: ${files.join(', ')}. Commit the fix (explicit paths, trailers). Do not weaken any test. Report commands and real output.
 ${preamble()}`
@@ -636,6 +672,20 @@ Tag every non-blocking finding with a severity (defect | test-gap | doc-copy | f
 Docs result: ${JSON.stringify(d)}
 ${preamble()}`
 
+const decidePrompt = (point, question, context) => `You are the DECIDE agent for issue ${ISSUE.id}. The run reached a decision point at ${point}. You change NOTHING in the repo.
+Question (verbatim):
+${question}
+Context (JSON): ${JSON.stringify(context).slice(0, 8000)}
+Decisions already taken in this run (by index): ${JSON.stringify(DECISIONS)}
+ADRs: ${(P.docs && P.docs.adr_dir) || 'n/a'}. Read the ones this question touches; a locked ADR or decision counts.
+1. Turn the question into 2 to 4 concrete, mutually exclusive options (what changes, what survives, what is lost). recommendation is the exact text of one option; give the reason.
+2. Rank: run \`${(P.ranker && P.ranker.cmd) || '(no ranker)'}\` with JSON on stdin {"context": "...", "question": "...", "options": [<the option texts>]}. Copy its output into ranking.raw VERBATIM, and fill top (exact option text), p_top and p_second from it. Run it ONCE; never rerun it for a different answer.
+3. critical=true if ANY of these hold, and name which in critical_reason:
+${list(CRITICAL)}
+4. weakens_protection=true when the recommended option leaves less privacy or security protection than the code at ${BASE} has (more shown while locked, data kept longer, more sent to a third party, wider access).
+Report honestly: the run, not you, decides whether this is settled without the human.
+${preamble()}`
+
 // ---------- per-stage metrics [CO-2] ----------
 
 // Token deltas per phase from budget.spent(); wall-clock time is the main loop's job.
@@ -656,6 +706,42 @@ function stage(title) {
 function call(prompt, o) {
   if (cur) cur.agents++
   return agent(prompt, o)
+}
+
+// ---------- decide: auto-settle a decision point, or stop for the human [SP-20] ----------
+
+let autoUsed = 0 // reserved synchronously, so parallel tasks cannot overrun the cap
+function notAuto(d) {
+  if (!d) return 'the decide agent died'
+  if (d.critical || d.weakens_protection) return `critical: ${d.weakens_protection ? 'the recommendation weakens protection (less privacy or security than today)' : d.critical_reason || 'unstated'}`
+  const r = d.ranking || {}
+  if (!(d.options || []).some((o) => norm(o) === norm(d.recommendation))) return 'the recommendation is not one of the options'
+  if (norm(r.top) !== norm(d.recommendation)) return `the recommendation and the ranker disagree (ranker top: ${r.top})`
+  if (typeof r.p_top !== 'number' || typeof r.p_second !== 'number') return 'the ranking has no probabilities'
+  if (Math.round((r.p_top - r.p_second) * 1000) < Math.round(DEC.margin * 1000)) return `thin margin (p=${r.p_top} vs ${r.p_second}; needs ${DEC.margin})`
+  return null
+}
+function menu(question, d, why) {
+  const r = d.ranking || {}
+  return [question, `Options: ${d.options.map((o, i) => `${i + 1}) ${o}`).join('; ')}`, `Recommended: ${d.recommendation} (${d.recommendation_reason})`,
+    `Ranker: top "${r.top}" p=${r.p_top}, second p=${r.p_second}. Raw: ${String(r.raw || '').slice(0, 600)}`, `Not auto: ${why}.`].join('\n')
+}
+// returns {auto: true, choice} after appending the AUTO decision, or {auto: false, text, detail} for the stop
+async function decide(point, question, context, o) {
+  if (DEC.auto === false) return { auto: false, text: question } // always-ask, as before
+  if (!(P.ranker && P.ranker.cmd)) return { auto: false, text: question } // nothing to check the recommendation against
+  if (autoUsed >= AUTO_CAP) return { auto: false, text: `${question}\nNot auto: the cap of ${AUTO_CAP} auto-decisions per run is reached.` }
+  autoUsed++
+  const d = await call(decidePrompt(point, question, context), opts('decide', Object.assign({ schema: DECIDE }, o)))
+  const why = notAuto(d)
+  if (why) {
+    autoUsed--
+    const r = (d && d.ranking) || {}
+    return { auto: false, text: d ? menu(question, d, why) : `${question}\nNot auto: ${why}.`, detail: d ? { options: d.options, recommendation: d.recommendation, ranking: { top: r.top, p_top: r.p_top, p_second: r.p_second }, critical: !!(d.critical || d.weakens_protection), not_auto: why } : { not_auto: why } }
+  }
+  DECISIONS.push(`AUTO (rec+ranker agree, p=${d.ranking.p_top}): ${d.recommendation}`)
+  result.auto_decisions.push({ point, question: String(question).slice(0, 300), choice: d.recommendation, p_top: d.ranking.p_top, p_second: d.ranking.p_second, decision_index: DECISIONS.length - 1 })
+  return { auto: true, choice: d.recommendation }
 }
 
 // ---------- per-task loop: build → verify → repair (one tier up) ----------
@@ -683,6 +769,12 @@ async function runTask(t, prefix) {
   take(b)
   const deviations = (b.deviations || []).slice()
   const attempts = []
+  const decidedHere = new Set() // a kind auto-decided once that comes back goes to the human [SP-20]
+  const repair = async (round, verdict) => {
+    const r = await call(repairPrompt(t, verdict), opts('repair', { label: `repair ${t.id} #${round + 1}`, phase: 'Verify', schema: BUILD }))
+    if (r) take(r)
+    if (r && r.deviations) deviations.push(...r.deviations)
+  }
   let v = null
   for (let round = 0; round <= REPAIR_ROUNDS; round++) {
     if (bad.length) {
@@ -701,13 +793,14 @@ async function runTask(t, prefix) {
         return { id: t.id, title: t.title, status: 'failed', reason: 'verifier died twice', commits: shas, attempts, build: b }
       }
       if (v.privacy_security_change) {
-        // a privacy or security behaviour change no human decided: never repaired or ranked away [SP-18]
+        // a privacy or security behaviour change nobody decided: the decide step, else the human; never repaired away [SP-18, SP-20]
         attempts.push({ round, passed: false, code_defect: false, summary: v.summary, non_blocking: v.non_blocking_findings || [] })
-        return {
-          id: t.id, title: t.title, status: 'decision_required', reason: 'privacy or security behaviour change with no human decision',
-          decision_required: `${t.id}: ${v.privacy_security_change} This changes privacy or security behaviour; decide whether it is intended, then relaunch with the answer in decisions [SP-18].`,
-          commits: shas, attempts, build: b, repairs: round,
-        }
+        const q = `${t.id}: ${v.privacy_security_change} This changes privacy or security behaviour; decide whether it is intended, then relaunch with the answer in decisions [SP-18].`
+        const d = decidedHere.has('privacy') || round === REPAIR_ROUNDS ? { auto: false, text: q } : await decide(`task ${t.id} (privacy)`, q, { task: t.title, files: t.files, verdict: v.summary }, { label: `decide ${t.id}`, phase: 'Verify' })
+        if (!d.auto) return { id: t.id, title: t.title, status: 'decision_required', reason: 'privacy or security behaviour change with no decision', decision_required: d.text, decision: d.detail || null, commits: shas, attempts, build: b, repairs: round }
+        decidedHere.add('privacy')
+        await repair(round, Object.assign({}, v, { unfinished_work: `Decided (AUTO, run decisions): ${d.choice}. Make the code match this decision; if it already does, commit nothing and say so.` }))
+        continue
       }
       const nb = (v.non_blocking_findings || []).slice()
       let own = []
@@ -738,17 +831,20 @@ async function runTask(t, prefix) {
       // same test, same cause after 2 repairs, and the cause is a behaviour choice: a human decides, no third repair [VF-5]
       const prev = attempts[attempts.length - 2]
       if (round >= SAME_CAUSE_ROUNDS && sig && v.behaviour_choice && prev && prev.sig === sig) {
-        return {
-          id: t.id, title: t.title, status: 'decision_required', reason: `same failure after ${round} repairs, and it is a behaviour choice`,
-          decision_required: `${t.id}: ${v.failing_test} fails because ${v.failure_cause}. Decide the intended behaviour, then relaunch this task.`,
-          unfinished_work: v.unfinished_work, commits: shas, attempts, build: b, repairs: round,
+        const q = `${t.id}: ${v.failing_test} fails because ${v.failure_cause}. Decide the intended behaviour, then relaunch this task.`
+        const d = decidedHere.has('behaviour') || round === REPAIR_ROUNDS ? { auto: false, text: q } : await decide(`task ${t.id} (behaviour)`, q, { task: t.title, acceptance: t.acceptance, unfinished_work: v.unfinished_work }, { label: `decide ${t.id}`, phase: 'Verify' })
+        if (!d.auto) {
+          return {
+            id: t.id, title: t.title, status: 'decision_required', reason: `same failure after ${round} repairs, and it is a behaviour choice`,
+            decision_required: d.text, decision: d.detail || null, unfinished_work: v.unfinished_work, commits: shas, attempts, build: b, repairs: round,
+          }
         }
+        decidedHere.add('behaviour')
+        v = Object.assign({}, v, { unfinished_work: `${v.unfinished_work}\nDecided (AUTO, run decisions): ${d.choice}. Implement exactly this behaviour.` })
       }
     }
     if (round === REPAIR_ROUNDS) break
-    const r = await call(repairPrompt(t, v), opts('repair', { label: `repair ${t.id} #${round + 1}`, phase: 'Verify', schema: BUILD }))
-    if (r) take(r)
-    if (r && r.deviations) deviations.push(...r.deviations)
+    await repair(round, v)
   }
   return { id: t.id, title: t.title, status: 'failed', reason: 'rejected after repairs', unfinished_work: v.unfinished_work, commits: shas, attempts, build: b, repairs: REPAIR_ROUNDS }
 }
@@ -887,7 +983,8 @@ function metrics(r) {
     promoted_defects: attempts.reduce((n, a) => n + (a.promoted_defects || 0), 0),
     bad_commit_reports: attempts.filter((a) => a.bad_commits).length, // [BD-22]
     gates_commits: (r.gates && r.gates.commits && r.gates.commits.length) || 0,
-    view_repairs: r.view_repair ? 1 : 0,
+    view_repairs: (r.view_repair ? 1 : 0) + (r.view_repair2 ? 1 : 0),
+    auto_decisions: (r.auto_decisions || []).length, // [SP-20]
     superseded_findings: mergeFindings(r).superseded, // [VF-32]
     agents: STAGES.reduce((n, s) => n + s.agents, 0),
     stages: STAGES,
@@ -897,12 +994,15 @@ function metrics(r) {
 function compact(r) {
   const { findings } = mergeFindings(r)
   const g = r.gates
-  const viewCommits = ((r.view_repair && r.view_repair.commits) || []).filter((x) => SHA.test(String(x)))
+  const viewCommits = [].concat(...[r.view_repair, r.view_repair2].map((x) => (x && x.commits) || [])).filter((x) => SHA.test(String(x)))
   const commits = [...new Set([].concat(...(r.tasks || []).map((t) => (t && t.commits) || []), viewCommits, (g && g.commits) || [], (r.docs && r.docs.commits) || []))]
   const cands = [].concat(...(r.diagnoses || []).map((d) => d.candidates || [])).sort((a, b) => (b.rank_p || 0) - (a.rank_p || 0))
   return {
     issue: r.issue, size: r.size, status: r.status, stage: r.stage || null, reason: r.reason || null,
     decision_required: r.decision_required || null,
+    decision: r.decision || null, // options, recommendation, ranking and why it was not auto [SP-20]
+    auto_decisions: r.auto_decisions || [], // for review after the fact [SP-20]
+    cause_class: (r.spec && r.spec.cause_class) || null,
     root_cause: r.spec ? r.spec.root_cause : (r.diagnoses || []).map((d) => d.findings).join(' | ') || null,
     confirmed_by: [].concat(...(r.diagnoses || []).map((d) => d.evidence || [])).slice(0, 2).join('; ') || null,
     ranking: cands.slice(0, 3).map((x) => ({ cause: x.cause, p: typeof x.rank_p === 'number' ? x.rank_p : null, verdict: x.verdict })),
@@ -939,6 +1039,25 @@ function compact(r) {
   }
 }
 
+// At most 4 bullets, each computed from the result: cause class, effort, auto-decisions, a watch line, side issues by kind [CM-7].
+function insights(c) {
+  const m = c.metrics
+  const top = (m.stages || []).filter((x) => typeof x.spent === 'number').sort((a, b) => b.spent - a.spent)[0]
+  const kinds = {}
+  for (const d of c.side_issues) kinds[d.kind] = (kinds[d.kind] || 0) + 1
+  const watch = []
+    .concat(c.gates && c.gates.known_flaky_matched.length ? [`flaky matched: ${c.gates.known_flaky_matched.join(', ')}`] : [])
+    .concat(m.superseded_findings ? [`${m.superseded_findings} superseded finding(s)`] : [])
+    .concat(c.decision_required ? [`decision stop at ${c.stage || 'build'}`] : [])
+  return [
+    `Cause class: ${c.cause_class || 'unclassified'}${c.shared_seam ? `, at ${c.shared_seam}` : ''}`,
+    `Effort: ${top ? `most in ${top.stage} (${top.spent} spent)` : 'stage spend not measured'}; repairs ${m.repairs}; verifier rejections ${m.verifier_rejections}`,
+    c.auto_decisions.length ? `Auto-decisions: ${c.auto_decisions.length} (top p ${c.auto_decisions.map((x) => x.p_top).join(', ')})` : null,
+    watch.length ? `Watch: ${watch.join('; ')}` : null,
+    Object.keys(kinds).length ? `Side issues by kind: ${Object.entries(kinds).map(([k, n]) => `${k} ${n}`).join(', ')}` : null,
+  ].filter(Boolean).slice(0, 4).map((x) => `- ${x}`)
+}
+
 // The human-facing summary, rendered from the data: nothing a model could embellish [CM-7, CM-3].
 function renderSummary(c) {
   const word = { verified: 'verified', partial: 'partially verified', failed: 'failed' }[c.status] || String(c.status).replace(/_/g, ' ')
@@ -960,6 +1079,8 @@ function renderSummary(c) {
     `Findings: defects ${F.defect.length}; test gaps ${F['test-gap'].length}; doc/copy ${F['doc-copy'].length}; follow-ups to file ${c.follow_ups.length}`,
     ...(c.view ? [`View: ${c.view.ran ? `${c.view.screenshots} screenshot sets in ${c.view.screenshots_dir}; branch defects open ${c.view.branch_defects_open}${c.view.repaired ? ' (after 1 repair)' : ''}` : 'did not run'}`] : []),
     `Side issues to file: ${c.side_issues.filter((d) => !d.bundle && !d.duplicate_of).length} separate, ${c.bundle_issue ? `1 bundle of ${c.side_issues.filter((d) => d.bundle && !d.duplicate_of).length}` : 'no bundle'}, ${c.side_issues.filter((d) => d.duplicate_of).length} comments on open issues`,
+    ...(c.auto_decisions.length ? [`Auto-decided (review): ${c.auto_decisions.map((x) => `[${x.point}] ${x.choice} p=${x.p_top}`).join('; ')}`] : []),
+    'Insights:', ...insights(c),
     `Commits (git log ${BASE}..HEAD): ${c.commits.map((s) => String(s).slice(0, 7)).slice(0, 12).join(' ') || 'none'}`,
     `Check by hand: ${c.manual_checks.join('; ') || 'the reporter\'s own flow'}`,
     `Open: ${open.join('; ') || 'nothing'}`,
@@ -1002,7 +1123,7 @@ function finish(r) {
 
 // ---------- pipeline ----------
 
-const result = { issue: ISSUE, size: SIZE, status: 'running', diagnoses: [], spec: null, plan: null, symptom_check: null, tasks: [], gates: null, docs: null }
+const result = { issue: ISSUE, size: SIZE, status: 'running', diagnoses: [], spec: null, plan: null, symptom_check: null, tasks: [], gates: null, docs: null, auto_decisions: [] }
 const splitSpecPlan = (sp) => {
   const plan = { plan_path: sp.plan_path, tasks: sp.tasks }
   const spec = Object.assign({}, sp)
@@ -1027,38 +1148,52 @@ if (A.resumeFrom === 'build') {
   const decision = result.diagnoses.find((d) => d.decision_required)
   // A diagnosis menu stops the run until the human answers. Diagnosis never sees DECISIONS (and is served from cache on resume),
   // so once answers exist the menu goes on to the spec, which sees both and re-raises decision_required if they don't settle it [SP-11, SP-19].
-  if (decision && !DECISIONS.length) return finish(Object.assign(result, { status: 'decision_required', stage: 'diagnose', decision_required: decision.decision_required })) // [SP-11]
+  // The decide step may settle it first (AUTO goes into DECISIONS, so the spec sees it) [SP-11, SP-20].
+  if (decision && !DECISIONS.length) {
+    const d = await decide('diagnose', decision.decision_required, { diagnoses: result.diagnoses.map((x) => ({ findings: x.findings, candidates: x.candidates })) }, { label: 'decide diagnose', phase: 'Diagnose' })
+    if (!d.auto) return finish(Object.assign(result, { status: 'decision_required', stage: 'diagnose', decision_required: d.text, decision: d.detail || null })) // [SP-11]
+  }
   if (A.stopAfter === 'diagnose') return finish(Object.assign(result, { status: 'stopped', stage: 'diagnose' }))
 
-  if (SMALL) {
-    stage('Spec')
-    const sp = await call(specPlanPrompt(result.diagnoses), opts('spec', { label: 'spec plan', schema: SPECPLAN }))
-    if (!sp) return finish(Object.assign(result, { status: 'failed', stage: 'spec', reason: 'agent died' }))
-    Object.assign(result, splitSpecPlan(sp))
-  } else {
-    stage('Spec')
-    result.spec = await call(specPrompt(result.diagnoses), opts('spec', { label: 'spec', schema: SPEC }))
-    if (!result.spec) return finish(Object.assign(result, { status: 'failed', stage: 'spec', reason: 'agent died' }))
+  stage('Spec')
+  let specRuns = 0
+  const writeSpec = async () => {
+    const sfx = specRuns++ ? ` #${specRuns}` : ''
+    if (SMALL) {
+      const sp = await call(specPlanPrompt(result.diagnoses), opts('spec', { label: 'spec plan' + sfx, schema: SPECPLAN }))
+      if (sp) Object.assign(result, splitSpecPlan(sp))
+      return !!sp
+    }
+    result.spec = await call(specPrompt(result.diagnoses), opts('spec', { label: 'spec' + sfx, schema: SPEC }))
+    return !!result.spec
   }
-  if (result.spec.decision_required) return finish(Object.assign(result, { status: 'decision_required', decision_required: result.spec.decision_required }))
-  // a shared component's changed default: any caller whose new flow is not known to be intended is the human's call [SP-17]
-  const unsure = (result.spec.caller_flows || []).filter((x) => x && x.intended === 'unsure')
-  if (unsure.length) {
-    return finish(Object.assign(result, {
-      status: 'decision_required', stage: 'spec',
-      decision_required: 'A shared component changes, and these callers\' new flow is not known to be intended:\n' + unsure.map((x) => `- ${x.caller}: before "${x.before}"; after "${x.after}". Intended?`).join('\n'),
-    }))
+  // the first open question the spec leaves; null when it settles everything
+  const specQuestion = () => {
+    const sp = result.spec
+    if (sp.decision_required) return { kind: 'spec', text: sp.decision_required }
+    // a shared component's changed default: any caller whose new flow is not known to be intended [SP-17]
+    const unsure = (sp.caller_flows || []).filter((x) => x && x.intended === 'unsure')
+    if (unsure.length) return { kind: 'caller_flows', text: 'A shared component changes, and these callers\' new flow is not known to be intended:\n' + unsure.map((x) => `- ${x.caller}: before "${x.before}"; after "${x.after}". Intended?`).join('\n') }
+    // privacy or security behaviour: settled only by a cited decision, never by the spec agent [SP-18]
+    const psRows = sp.privacy_security_rows || []
+    const decided = decidedRows()
+    if (sp.privacy_security_change && (!psRows.length || decided.length < psRows.length)) {
+      const open = psRows.filter((x) => !decided.some((d) => d.surface === (x && x.surface)))
+      return { kind: 'privacy', text: 'This change alters privacy or security behaviour (screen or DOM while locked, data lifetime, telemetry or third-party egress, or access; each row names its surface). Decide each row, then relaunch with ONLY the answers added to decisions [OR-28]:\n'
+        + (open.length ? open.map((x) => `- ${x.surface}: before "${x.before}"; after "${x.after}". Intended?`).join('\n') : '- (the spec named no surface: which screens or data change?)') }
+    }
+    return null
   }
-  // privacy or security behaviour: the human decides, never the spec agent or a ranker [SP-18]
-  const psRows = result.spec.privacy_security_rows || []
-  const decided = decidedRows()
-  if (result.spec.privacy_security_change && (!psRows.length || decided.length < psRows.length)) {
-    const open = psRows.filter((x) => !decided.some((d) => d.surface === (x && x.surface)))
-    return finish(Object.assign(result, {
-      status: 'decision_required', stage: 'spec',
-      decision_required: 'This change alters privacy or security behaviour (screen or DOM while locked, data lifetime, telemetry or third-party egress, or access; each row names its surface). Decide each row, then relaunch with ONLY the answers added to decisions [OR-28]:\n'
-        + (open.length ? open.map((x) => `- ${x.surface}: before "${x.before}"; after "${x.after}". Intended?`).join('\n') : '- (the spec named no surface: which screens or data change?)'),
-    }))
+  if (!(await writeSpec())) return finish(Object.assign(result, { status: 'failed', stage: 'spec', reason: 'agent died' }))
+  // each open question: the decide step, else the human. An AUTO answer re-runs the spec once with it in DECISIONS [SP-20]
+  const decidedKinds = new Set()
+  for (let q = specQuestion(); q; q = specQuestion()) {
+    const d = decidedKinds.has(q.kind)
+      ? { auto: false, text: `${q.text}\nNot auto: the spec raised this again after an auto-decision.` }
+      : await decide(`spec (${q.kind})`, q.text, { spec: result.spec }, { label: `decide ${q.kind}`, phase: 'Spec' })
+    if (!d.auto) return finish(Object.assign(result, { status: 'decision_required', stage: 'spec', decision_required: d.text, decision: d.detail || null }))
+    decidedKinds.add(q.kind)
+    if (!(await writeSpec())) return finish(Object.assign(result, { status: 'failed', stage: 'spec', reason: 'agent died' }))
   }
   if (!result.spec.mechanism_explains_reported_data) log('Spec: no diagnosed mechanism fully explains the reported data. Proceeding with a fix that is correct regardless, plus evidence capture [SP-3].')
 
@@ -1144,7 +1279,17 @@ if (result.spec.user_visible) {
     result.view_repair = await call(viewRepairPrompt(bd, files), opts('repair', { label: 'repair view #1', phase: 'View', schema: BUILD }))
     result.view = await call(viewPrompt(2, bd), opts('verify', { label: 'view #2', phase: 'View', schema: VIEW }))
     bd = branchDefects(result.view)
-    if (bd.length) result.view_decision = 'Visual defects this branch caused remain after one repair:\n' + bd.map((f) => `- ${f.finding} (${(f.screenshots || []).join(', ')})`).join('\n')
+    if (bd.length) {
+      const q = 'Visual defects this branch caused remain after one repair:\n' + bd.map((f) => `- ${f.finding} (${(f.screenshots || []).join(', ')})`).join('\n')
+      const d = await decide('view', q, { defects: bd, files }, { label: 'decide view', phase: 'View' })
+      if (d.auto) {
+        // one more repair with the decided behaviour, then one last look; still there, a human decides [VF-23, SP-20]
+        result.view_repair2 = await call(viewRepairPrompt(bd, files, d.choice), opts('repair', { label: 'repair view #2', phase: 'View', schema: BUILD }))
+        result.view = await call(viewPrompt(3, bd), opts('verify', { label: 'view #3', phase: 'View', schema: VIEW }))
+        bd = branchDefects(result.view)
+        if (bd.length) result.view_decision = 'Visual defects this branch caused remain after the auto-decided repair:\n' + bd.map((f) => `- ${f.finding} (${(f.screenshots || []).join(', ')})`).join('\n')
+      } else result.view_decision = d.text
+    }
   }
   result.view_branch_defects = result.view ? bd : []
 }
@@ -1186,6 +1331,7 @@ const allVerified = result.tasks.every((t) => t && t.status === 'verified')
 const viewOk = !result.spec.user_visible || (result.view && !result.view_branch_defects.length)
 result.status = allVerified && viewOk && result.gates && result.gates.all_green && result.gates_commits_verified !== false ? 'verified' : 'partial'
 const decisions = result.tasks.filter((t) => t && t.status === 'decision_required').map((t) => t.decision_required) // [VF-5]
+result.decision = (result.tasks.find((t) => t && t.decision) || {}).decision || null
 if (result.view_decision) decisions.push(result.view_decision)
 if (decisions.length) Object.assign(result, { status: 'decision_required', decision_required: decisions.join('\n') })
 return finish(result) // compact and capped, summary rendered from the data [OR-26]

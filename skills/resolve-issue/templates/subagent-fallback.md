@@ -10,7 +10,7 @@ Where the harness supports it, run each subagent in the background, so the conve
    - If any diagnosis returns `decision_required`, STOP and show the human the menu [SP-11].
    - `stopAfter: 'diagnose'` ("diagnose only") ends here.
 2. **Spec.** Run 1 agent with both diagnoses pasted verbatim. It writes `spec.md` and returns the SPEC JSON.
-2b. If the spec's caller table has an "unsure" row, STOP and ask the human [SP-17]. Likewise if `privacy_security_change` is true and any row lacks a human decision [SP-18].
+2b. If the spec's caller table has an "unsure" row, STOP and ask the human [SP-17]. Likewise if `privacy_security_change` is true and any row lacks a decision [SP-18]. Before any such stop, auto-decide as in `references/spec-and-plan.md` rule 17 [SP-20].
 3. **Plan.** Run 1 agent. It writes `plan.md` and returns the task list as JSON. Count the waves; a fully serial medium plan (more than two tasks) gets one re-plan [PL-15]. For a small issue, steps 2 and 3 are one agent writing one task, with the spec in the root-fix commit body (the template's spec-plan prompt). Parse that list, and from here on iterate over it, never over a list you typed [PL-3].
 4. **Symptom check**, only when no diagnosis measured a reproduction. Run 1 fresh agent with the fit prompt, then compute the verdict yourself from its probabilities: top two within 0.2 is close. If it is not `reported`, go back to step 1 with what you learned [PL-1]. `stopAfter: 'plan'` ends here; resume at step 5 from the committed plan.
 5. **Build in waves.** Keep these in a scratch file, `run-state.json`: `done`, `failed`, `remaining`.

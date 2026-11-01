@@ -51,7 +51,7 @@ Privacy is a law in this skill, not a preference. It is injected into every agen
 - **Hide admin routes from non-admins with 404, not 403**, on both frontend and backend [PS-15].
 - **Mark API responses that carry private data `no-store, private`**, and pin the fix with a regression test that covers error responses too [PS-21].
 - **When a page and its data share one URL, distinguished by headers**, set `Vary` and no-cache on the app pages [PS-22].
-- **A change to what is on screen or in the DOM when the app is locked or logged out, or to how long data lives, is the human's decision** [SP-18]. The spec flags it per surface and the run stops at spec. The verifier checks the diff for one the spec missed. Never let a ranker decide it, however confident.
+- **A change to what is on screen or in the DOM when the app is locked or logged out, or to how long data lives, is never the spec agent's decision** [SP-18]. The spec flags it per surface. The run's decide step may settle a row only when its recommendation and the ranker agree with margin and nothing gets less protected; a weakening always stops the run for the human [SP-20]. The verifier checks the diff for one the spec missed.
 - **Fail closed on capability signals.** While a status is pending or errored, treat an optional feature as unavailable. Status endpoints return only a boolean, never key material or its length [PS-25].
 - **In a triage rubric for a sensitive-data app, round anything touching data integrity or confidentiality UP to top priority**, and round pure polish down [PS-23].
 
