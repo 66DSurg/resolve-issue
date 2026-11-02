@@ -4,7 +4,9 @@
 // the rendered summary, per-stage metrics, and the second-dogfood rules: wave count and one re-plan,
 // SHA-only commit ids, per-acceptance-row negative controls, caller-flow decisions, the behaviour-choice
 // stop in repair, post_install; and the third-dogfood rules: the VIEW lens, the side-issue harvest, privacy
-// decisions at spec and verify, stale findings, logs outside the worktree. Run: node scripts/test-workflow.mjs
+// decisions at spec and verify, stale findings, logs outside the worktree; and 1.3.0: docs repair round, out-of-scope notes,
+// unrelated_unstable gates, branch security defects, concept dedupe, resume fields, narrowing decisions, side-issue labels.
+// Run: node scripts/test-workflow.mjs
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 
@@ -32,7 +34,7 @@ async function run({
   size = 'medium', tasks = TASKS, measured = false, docsImpact = 'none', gatesCommits = [], gatesPass = true, extra = {},
   serialReason = 'T4 and T5 form a cycle', replanTasks = null, buildCommits = null, verdictExtra = () => ({}), callerFlows = [],
   specExtra = {}, view = () => ({ screenshots: [], findings: [], processes_left: 0 }), harvest = () => ({ side_issues: [], dropped: [] }),
-  gatesGreen = true, diagExtra = {}, decide = null, specSeq = null,
+  gatesGreen = true, diagExtra = {}, decide = null, specSeq = null, docsPass = () => true, gatesExtra = {},
 } = {}) {
   const calls = []
   const seen = {}
@@ -55,16 +57,17 @@ async function run({
     if (label === 'verify gates') return { passed: gatesPass, checks: [], unfinished_work: '', code_defect: !gatesPass, summary: '', non_blocking_findings: [] }
     const id = label.split(' ')[1]
     if (label.startsWith('build')) return dieBuild.includes(id) ? null : { commits: (buildCommits && buildCommits(id)) || [H('sha-' + id)], files_changed: [], commands_run: [{ command: 'bun test', output_tail: 'BUILDER-CLAIM all green' }], deviations: ['dev-' + id], notes: 'BUILDER-NOTES trust me' }
+    if (label === 'repair docs') return { docs_impact: 'updated', justification: 'fixed overclaim', files: ['docs/x.md'], commits: [H('docfix')] }
     if (label.startsWith('repair')) return { commits: [H('fix-' + id + label.split('#')[1])], files_changed: [], commands_run: [], deviations: [] }
-    if (label.startsWith('verify') && label !== 'verify docs') {
+    if (label.startsWith('verify') && !label.startsWith('verify docs')) {
       seen[id] = (seen[id] || 0) + 1
       const pass = !alwaysReject.includes(id) && !(rejectOnce.includes(id) && seen[id] === 1)
       return Object.assign({ passed: pass, checks: [], unfinished_work: pass ? '' : 'fix ' + id, code_defect: !pass, summary: '', non_blocking_findings: findings(id, seen[id]), negative_controls: [{ row: 'y', result: 'red' }] }, verdictExtra(id, seen[id]))
     }
     if (label === 'completeness') return { missing: [], detail: '' }
-    if (label === 'gates') return { head_before: 'pre-gates', all_green: gatesGreen, gates: [{ command: 'unit', passed: true, skipped: false, output_tail: '' }], failures_fixed: gatesCommits.length ? ['lint in a.ts'] : [], remaining_failures: [], commits: gatesCommits }
+    if (label === 'gates') return { head_before: 'pre-gates', all_green: gatesGreen, gates: [{ command: 'unit', passed: true, skipped: false, output_tail: '' }], failures_fixed: gatesCommits.length ? ['lint in a.ts'] : [], remaining_failures: [], commits: gatesCommits, ...gatesExtra }
     if (label === 'docs') return { docs_impact: 'updated', justification: 'user docs', files: ['docs/x.md'] }
-    if (label === 'verify docs') return { passed: true, checks: [], unfinished_work: '', code_defect: false, summary: '', non_blocking_findings: [] }
+    if (label.startsWith('verify docs')) { const ok = docsPass(label === 'verify docs' ? 1 : 2); return { passed: ok, checks: ok ? [] : [{ check: 'claims true', ok: false, detail: '3 overclaims' }], unfinished_work: ok ? '' : 'docs/x.md overclaims offline support', code_defect: false, summary: '', non_blocking_findings: [] } }
     throw new Error('unexpected label ' + label)
   }
   const parallel = async (thunks) => Promise.all(thunks.map((t) => t().catch(() => null)))
@@ -451,7 +454,7 @@ async function run({
 }
 // severity decides: serious problems get their own issue, minor ones ONE bundle per run; identifiers scrubbed
 {
-  const d = (title, severity, bundle) => ({ title, body: `${title}: see MRN-12345`, kind: 'bug', severity, evidence: ['a.ts:1'], duplicate_of: null, bundle })
+  const d = (title, severity, bundle) => ({ title, body: `${title}: see MRN-12345`, kind: 'bug', severity, evidence: ['z.ts:1'], duplicate_of: null, bundle })
   const drafts = [d('Session token kept after logout', 'security', true), d('Edits lost on tap outside', 'data-loss', true), d('Button 2px off', 'minor', false), d('Typo in footer', 'minor', true)]
   const { res } = await run({ findings: () => [{ severity: 'follow-up', finding: 'x' }], harvest: () => ({ side_issues: drafts, dropped: [] }),
     extra: { profile: { privacy: { identifier_patterns: ['MRN-\\d+'] }, labels: { 'needs-triage': 'triage-pending' } } } })
@@ -594,3 +597,100 @@ const bullets = (summary) => { const l = summary.split('\n'); const i = l.indexO
   assert.equal(res.status, 'verified')
 }
 console.log('auto-decide and insights: ok')
+
+// ---------- 1.3.0 rules ----------
+// docs rejected: one repair round; still rejected, the run is partial with 'docs not verified', never verified [VF-33]
+{
+  const fixed = await run({ docsImpact: 'docs/x.md', docsPass: (n) => n === 2 })
+  const labels = fixed.calls.map((c) => c.label)
+  assert.ok(labels.includes('repair docs') && labels.includes('verify docs #2'), labels.join(', '))
+  assert.match(fixed.calls.find((c) => c.label === 'repair docs').prompt, /overclaims offline support/)
+  assert.equal(fixed.res.status, 'verified')
+  assert.ok(fixed.res.commits.includes(H('docfix')))
+  const still = await run({ docsImpact: 'docs/x.md', docsPass: () => false })
+  assert.equal(still.calls.filter((c) => c.label === 'repair docs').length, 1, 'one docs repair round only')
+  assert.equal(still.res.status, 'partial')
+  assert.equal(still.res.reason, 'docs not verified')
+  assert.equal(still.res.docs.verified, false)
+  assert.match(still.res.summary, /Open: [^\n]*docs not verified/)
+}
+// a pass whose unfinished_work names only files outside the task is a side finding (harvest), not a failure [VF-34]
+{
+  const sib = 'other/export-page.ts: the export page has the same stale-count bug'
+  const ve = (id, n) => (id === 'T1' && n === 1 ? { passed: true, unfinished_work: sib, negative_controls: [] } : id === 'T2' ? { passed: true, unfinished_work: sib } : {})
+  const { res, calls } = await run({ verdictExtra: ve })
+  assert.ok(!/export-page/.test(calls.find((c) => c.label === 'repair T1 #1').prompt), 'out-of-scope work never reaches the task\'s repair')
+  assert.equal(res.tasks.find((t) => t.id === 'T2').status, 'verified')
+  assert.equal(res.status, 'verified')
+  const f = res.findings['follow-up'].find((x) => /export page has the same/.test(x.finding))
+  assert.ok(f && f.evidence.includes('other/export-page.ts'), 'routed to the findings list as a follow-up')
+  assert.match(calls.find((c) => c.label === 'harvest').prompt, /export page has the same stale-count bug/)
+  assert.match(calls.find((c) => c.label === 'verify T1 #1').prompt, /outside the task's list[^\n]*does not fail the task/)
+}
+// a gates failure outside the diff that flips on rerun is unrelated_unstable: filed, not partial [TG-35]
+{
+  const flaky = { failure: 'e2e: search.spec.ts timed out', spec_file: 'tests/e2e/search.spec.ts', code_paths: ['src/search.ts'], flipped_on_rerun: true }
+  const g = (f) => ({ gatesGreen: false, gatesExtra: { remaining_failures: [f.failure], failures: [f], diff_files: ['a.ts', 'b.ts'] } })
+  const { res, calls } = await run(g(flaky))
+  assert.equal(res.status, 'verified', 'an unrelated unstable failure does not make the run partial')
+  assert.deepEqual(res.gates.unrelated_unstable, [{ failure: flaky.failure, spec_file: flaky.spec_file }])
+  assert.deepEqual(res.gates.remaining_failures, [])
+  assert.match(calls.find((c) => c.label === 'harvest').prompt, /unrelated_unstable: e2e: search\.spec\.ts timed out/)
+  assert.match(res.summary, /unrelated_unstable \(filed, not blocking\): tests\/e2e\/search\.spec\.ts/)
+  assert.match(calls.find((c) => c.label === 'gates').prompt, /flipped_on_rerun/)
+  assert.equal((await run(g(Object.assign({}, flaky, { code_paths: ['a.ts:12'] })))).res.status, 'partial', 'touches the diff: blocks')
+  assert.equal((await run(g(Object.assign({}, flaky, { flipped_on_rerun: false })))).res.status, 'partial', 'stays red on rerun: blocks')
+}
+// harvest: a security or privacy finding in this branch's files goes back as a branch defect, never a side issue [OR-27]
+{
+  const drafts = [
+    { title: 'Suffix rule accepts buyable country-code domains', body: 'b', kind: 'bug', severity: 'security', evidence: ['a.ts:40'], duplicate_of: null, bundle: false },
+    { title: 'Old token kept in another module', body: 'b', kind: 'bug', severity: 'security', evidence: ['legacy/auth.ts:9'], duplicate_of: null, bundle: false },
+  ]
+  const { res, calls } = await run({ findings: () => [{ severity: 'follow-up', finding: 'x' }], harvest: () => ({ side_issues: drafts, dropped: [] }) })
+  assert.ok(!res.side_issues.some((d) => /buyable/.test(d.title)), 'never filed')
+  assert.ok(res.side_issues.some((d) => /another module/.test(d.title)), 'outside the diff it is a side issue')
+  assert.deepEqual(res.branch_defects.map((d) => d.finding), ['Suffix rule accepts buyable country-code domains'])
+  assert.equal(res.status, 'partial')
+  assert.match(res.summary, /Open: [^\n]*branch defect \(security\): Suffix rule/)
+  assert.match(calls.find((c) => c.label === 'harvest').prompt, /SECURITY or PRIVACY finding that touches any file in this branch's diff/)
+}
+// harvest dedupes by concept; a resumed build extracts the spec's fields and never ships placeholders [OR-27, OR-30]
+{
+  const hp = (await run({ findings: () => [{ severity: 'follow-up', finding: 'x' }] })).calls.find((c) => c.label === 'harvest').prompt
+  assert.match(hp, /Dedupe by CONCEPT[^\n]*root cause[^\n]*title and labels/)
+  const r = await run({ extra: { resumeFrom: 'build' }, specExtra: { root_cause: 'See the spec.', user_change: 'see the committed spec for details' } })
+  assert.match(r.calls.find((c) => c.label === 'load plan').prompt, /root_cause, user_change and cause_class/)
+  assert.ok(!/see the (committed )?spec/i.test(r.res.summary), r.res.summary)
+  assert.equal(r.res.root_cause, null)
+  assert.equal(r.res.user_change, null)
+}
+// narrowing inside an existing human decision is auto-decidable; widening or a new data lifetime stops [SP-18, SP-20]
+{
+  const row = { surface: 'stale candidate cleanup', before: 'deletes every candidate older than 24h', after: 'skips candidates another live account shares', decision_ref: null }
+  const settle = (n) => (n > 1 ? { privacy_security_rows: [Object.assign({}, row, { decision_ref: 1 })] } : {})
+  const base = { specExtra: { privacy_security_change: true, privacy_security_rows: [row] }, specSeq: settle, extra: { profile: RANKER, decisions: ['delete stale candidates older than 24h'] } }
+  const narrow = { critical: true, critical_reason: 'irreversible deletion of user data', narrows_decision: 0, widens_exposure: false, new_data_lifetime: false }
+  const ok = await run(Object.assign({ decide: counting(narrow) }, base))
+  assert.equal(ok.res.status, 'verified', 'a narrowing inside human decision [0] does not stop')
+  assert.equal(ok.res.auto_decisions[0].narrows_decision, 0)
+  assert.match(ok.calls.find((c) => c.label === 'spec #2').prompt, /\[1\] AUTO \(narrows decision \[0\]/)
+  assert.match(ok.calls.find((c) => c.label.startsWith('decide')).prompt, /only NARROWS exposure/)
+  for (const bad of [{ widens_exposure: true }, { new_data_lifetime: true }, { narrows_decision: 5 }]) {
+    const r = await run(Object.assign({ decide: counting(Object.assign({}, narrow, bad)) }, base))
+    assert.equal(r.res.status, 'decision_required', JSON.stringify(bad))
+  }
+  const onAuto = await run(Object.assign({ decide: counting(narrow) }, base, { extra: { profile: RANKER, decisions: ['AUTO (rec+ranker agree, p=0.8): delete'] } }))
+  assert.equal(onAuto.res.status, 'decision_required', 'narrowing an AUTO decision is not narrowing a human one')
+}
+// side issues carry profile.labels.side_issue; the summary always ends "New issues filed: …" [OR-29]
+{
+  const d = { title: 'Export page has no empty state', body: 'b', kind: 'ux', severity: 'minor', evidence: ['e.ts:1'], duplicate_of: null, bundle: true }
+  const { res } = await run({ findings: () => [{ severity: 'follow-up', finding: 'x' }], harvest: () => ({ side_issues: [d], dropped: [] }),
+    extra: { profile: { labels: { 'needs-triage': 'triage-pending', side_issue: 'found-by-run' } } } })
+  assert.deepEqual(res.side_issues[0].labels, ['triage-pending', 'found-by-run'])
+  assert.deepEqual(res.bundle_issue.labels, ['triage-pending', 'found-by-run'])
+  assert.match(res.summary.split('\n').pop(), /^New issues filed: pending audit \(1 draft\(s\), 1 bundle, labelled triage-pending, found-by-run\)$/)
+  assert.equal((await run()).res.summary.split('\n').pop(), 'New issues filed: none')
+}
+console.log('1.3.0 rules: ok')

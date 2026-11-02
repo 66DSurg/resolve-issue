@@ -46,7 +46,7 @@ issues:
   tracker: github
   close_trailer: "Closes #{n}"   # use "Ships: #{n}" when the main line is not production
   auto_file: true                # the main loop files the run's side-issue drafts after the audit [OR-27]
-labels: {}                       # role → label string; a missing role uses its own name
+labels: {}                       # role → label string; a missing role uses its own name. side_issue: <label> tags every filed side issue (e.g. found-by-run) [OR-29]
 git:
   subject: "<summary> (#{n})"
 tiers:                           # references/cost.md

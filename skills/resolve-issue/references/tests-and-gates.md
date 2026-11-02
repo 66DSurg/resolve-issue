@@ -24,6 +24,8 @@ The gates stage runs exactly the gate list built from the profile, in order, and
 - **If CI checks run only on pull requests** and you commit straight to the main line, run those checks locally in every gate pass [TG-22].
 - **A check that needs a PR or CI context to run at all** (it reads PR metadata or CI-only variables) is not a local gate. It goes in the profile's `ci_only` list, the gates stage reports it as ci_only, and a local failure of it never makes the run red [TG-34].
 - **Stub paid external calls** in tests by default and assert zero billed calls [CO-4].
+- **Live-API suites are not gates** [TG-36]. A suite that calls a real third-party API (billing, rate limits) is excluded by default: the profile's `commands.unit` sets that suite's skip env. `known_flaky` is not the tool for it, because a live call fails for reasons the branch cannot control and costs money every run.
+- **An unrelated unstable failure does not block** [TG-35]. The gates agent reports every remaining failure with its spec file, the code paths it exercises and whether it flipped when rerun alone, plus the diff's file list. A failure that touches no diff file and flips on rerun is `unrelated_unstable`: reported in the gates table, harvested as a side issue, and not a reason for `partial`. One that touches the diff, or stays red, still blocks.
 - **Do not run a suite while another agent rebuilds the same frontend**, because it causes spurious failures [IS-12].
 
 ## 2. Reading results honestly

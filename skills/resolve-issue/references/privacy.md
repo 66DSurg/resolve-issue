@@ -21,6 +21,8 @@ Privacy is a law in this skill, not a preference. It is injected into every agen
 - **Scrubbing the current files does not scrub git history.** Plan a history rewrite before a repo goes public, and add a guard so nothing new gets in [PS-3].
 - **Guard retired tokens by hash.** A test hashes every word of every tracked text file and compares the result against stored hashes, so the deny-list does not itself re-leak the tokens. Fixture names are obviously synthetic [PS-4].
 
+- **The spec's privacy table says whose data each row deletes or keeps** [SP-21], including other accounts that share an identifier (an email, a phone number, a record number) with the one being acted on. A cleanup keyed on a shared identifier reaches the other account too; the spec, not a build verifier, should find that.
+
 ## 2. Agents and production
 
 - **Agents get no production access**: no querying production or staging databases, and no reading production logs. They reproduce locally and list any production-only fact as an open question for the human [PS-5].

@@ -40,7 +40,7 @@ human: {tests_on: staging}
 #   post_install: <cmd or null>   # codegen/sync after install (fresh and control worktrees) [IS-16]
 #   typecheck: <cmd>
 #   lint: <cmd>
-#   unit: <cmd>
+#   unit: <cmd>                   # set the skip env of any live third-party API suite here; live calls are never gates [TG-36]
 #   e2e: <cmd>
 #   e2e_isolated: <cmd or null>   # takes spare ports; see references/isolation.md
 #   build: <cmd>
@@ -82,6 +82,7 @@ human: {tests_on: staging}
 #   wontfix: wontfix
 #   in-progress: in-progress
 #   keep-open: keep-open
+#   side_issue: found-by-run     # extra label on every side issue a run files, so they can be filtered [OR-29]
 # git:
 #   subject: "<summary> (#{n})"
 #   trailers: ["Co-Authored-By: <agent identity>"]

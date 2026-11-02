@@ -12,7 +12,7 @@ Scope [DC-4]:
 5. **Rebuild the docs, rerun the doc checks, and index any new spec, plan or ADR** in the same change [DC-5].
 
 Rules:
-- **Docs must never promise what the code does not do.** Check every sentence against the code. The changelog claims only what shipped. Never claim production is fixed unless the deploy path really ships the change [DC-3]. The verifier checks the claims [VF-6].
+- **Docs must never promise what the code does not do.** Check every sentence against the code. The changelog claims only what shipped. Never claim production is fixed unless the deploy path really ships the change [DC-3]. The verifier checks the claims [VF-6]. A rejection gets one repair round and a second verification; still rejected, the run is partial with "docs not verified" [VF-33].
 - **The PR states "docs updated" or "no docs needed" plus a real justification.** If CI can enforce exactly one choice and a minimum length, it should [DC-1].
 - **Add an ADR only when the decision is hard to reverse, surprising, and a real trade-off** [DC-6]. Ground it in cited evidence and never invent a rationale. Record the rankings, the decision and any overrules inside it [DC-7], plus each rejected alternative and why it lost, so a later "why not X?" is answered from the docs [DC-22]. Decide whether to amend an existing ADR or create a new one.
 - **Number ADRs sequentially without backfilling gaps.** Give each exactly one owning overview page, and generate the index with a CI check [DC-8].

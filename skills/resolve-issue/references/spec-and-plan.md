@@ -20,6 +20,7 @@ Templates: `templates/spec.md` and `templates/plan.md`.
 - **Multi-slice features get grilled first.** Before speccing the next slice, test it against the glossary, the ADRs and the original design. Then run spec, plan and build in one background run [SP-1]. Without this, later slices drift. In one case, grilling a drifted slice produced three ADRs and a new slice order.
 - **Feature issues get a design grill, and plain bugs go straight to the pipeline** [SP-2].
 - **Check the glossary.** Use the project's terms in titles, hypotheses, test names and the spec. A missing term is a signal: either you are inventing language, or there is a real gap to record [SP-8]. Before introducing a new term, check that it does not collide with an existing one, since near-identical names for different concepts confuse users and agents [SP-9].
+- **Optional panel pre-flight for UI and design choices** [PF-13]. When a choice sets taste against a standard, settle it before the run: render the real options on test data, let a few personas deliberate over two rounds, rank the result, and have a chair write the concrete change list into `decisions`. Skip it for plain bugs.
 - **Give the spec agent a file map** of the key files and an exemplar spec to copy the house format from [SP-13].
 
 ## 2. Spec rules

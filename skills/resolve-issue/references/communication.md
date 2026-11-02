@@ -48,7 +48,10 @@ Commits (git log <base>..HEAD): abc1234 def5678
 Check by hand: <the reporter's exact flow, device, data>.
 Open: <follow-up issues filed: #…> | <pending real-device check>
 Next: your yes to merge; then a separate yes to push.
+New issues filed: #… #… (bundle #…) | none
 ```
+
+The last line is always "New issues filed": the run renders it as "pending audit (…)" or "none", and the main loop replaces "pending" with the numbers it filed [OR-29].
 
 ## Board and tracker
 

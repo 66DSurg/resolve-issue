@@ -27,7 +27,7 @@
 //   otherWorktrees: [],
 //   maxParallel:  4,
 //   stopAfter:    null | 'diagnose' | 'plan',    // opt-in human checkpoint; null (default) runs to the end [SP-1]
-//   resumeFrom:   null | 'build',                // 'build' reads the committed plan at planPath and builds it
+//   resumeFrom:   null | 'build',                // 'build' reads the committed plan at planPath and builds it, plus root cause, user change and cause class from the committed spec [OR-30]
 //   scratchDir:   '/abs/scratch',                // OUTSIDE the worktree: logs → <scratchDir>/<issue>/logs, screenshots → .../screenshots [IS-19]
 //   openIssues:   [{ number: 12, title: '...', labels: ['bug'] }],  // fetched by the main loop with the tracker CLI; the harvest dedupes against it [OR-27]
 //   decisions:    [],                            // the human's answers to an earlier decision_required, verbatim; spec rows cite them by index [SP-18].
@@ -94,11 +94,16 @@ const CRITICAL = [ // any of these makes a decision the human's; profile.decisio
   'contradicting a locked ADR',
   'production data or production access',
   'security weakening (less protection than today)',
+  'widening exposure of user data, or a new data lifetime (privacy)',
 ].concat(DEC.critical || [])
 const OPEN_ISSUES = A.openIssues || []
 const KINDS = ['bug', 'ux', 'a11y', 'perf', 'docs', 'infra', 'test']
 const SERIOUS = ['privacy', 'security', 'data-loss', 'broken-flow', 'wrong-state'] // each its own issue; anything else is 'minor' and bundled [OR-27]
 const STALE_STAGES = ['verify', 'view', 'gates', 'docs'] // a finding true only until one of these ran [VF-32]
+const LABELS = P.labels || {}
+const ISSUE_LABELS = [LABELS['needs-triage'] || 'needs-triage'].concat(LABELS.side_issue ? [LABELS.side_issue] : []) // every filed side issue carries these [OR-29]
+const PLACEHOLDER = /^\W*(see|refer to|in) (the )?(committed )?(spec|plan)\b/i // never shipped in a summary [OR-30]
+const real = (x) => (x && !PLACEHOLDER.test(String(x)) ? x : null)
 
 // ---------- helpers ----------
 
@@ -252,7 +257,7 @@ const SPEC_PROPS = {
     description: 'when privacy_security_change: one row per surface. decision_ref is the index of the decision in the run\'s decisions list that settles the row, else null. Never settled by you [SP-18]',
     items: {
       type: 'object',
-      properties: { surface: { type: 'string' }, before: { type: 'string' }, after: { type: 'string' }, decision_ref: { type: ['integer', 'null'] } },
+      properties: { surface: { type: 'string' }, before: { type: 'string' }, after: { type: 'string' }, whose_data: { type: 'string', description: 'whose data this deletes or keeps, including other accounts sharing an identifier with the one acted on [SP-21]' }, decision_ref: { type: ['integer', 'null'] } },
       required: ['surface', 'before', 'after', 'decision_ref'],
     },
   },
@@ -373,6 +378,12 @@ const GATES = {
     commits: { type: 'array', items: { type: 'string' } },
     ci_only: { type: 'array', items: { type: 'string' }, description: 'profile checks not run because they need a PR or CI context' },
     remaining_failures: { type: 'array', items: { type: 'string' } },
+    failures: {
+      type: 'array',
+      description: 'one per remaining failure: the spec file, the code paths it exercises, and whether it passed when rerun alone [TG-35]',
+      items: { type: 'object', properties: { failure: { type: 'string' }, spec_file: { type: ['string', 'null'] }, code_paths: { type: 'array', items: { type: 'string' } }, flipped_on_rerun: { type: 'boolean' } }, required: ['failure', 'spec_file', 'code_paths', 'flipped_on_rerun'] },
+    },
+    diff_files: { type: 'array', items: { type: 'string' }, description: `output of git diff --name-only ${BASE}...HEAD` },
     known_flaky_matched: { type: 'array', items: { type: 'string' } },
   },
   required: ['head_before', 'all_green', 'gates', 'failures_fixed', 'remaining_failures'],
@@ -454,6 +465,9 @@ const DECIDE = {
     critical: { type: 'boolean' },
     critical_reason: { type: ['string', 'null'], description: 'which critical criterion holds, else null' },
     weakens_protection: { type: 'boolean', description: 'true when the recommended option leaves less privacy or security protection than the code at the base has' },
+    widens_exposure: { type: 'boolean', description: 'true when the recommendation exposes more user data, or other accounts\' data, than the base or the cited decision does' },
+    new_data_lifetime: { type: 'boolean', description: 'true when the recommendation keeps or deletes data on a schedule no existing decision covers' },
+    narrows_decision: { type: ['integer', 'null'], description: 'index of an existing HUMAN decision in the run\'s decisions that the recommendation stays inside while only NARROWING exposure (less deleted, less shown, fewer accounts touched); else null [SP-18]' },
   },
   required: ['question', 'options', 'recommendation', 'recommendation_reason', 'ranking', 'critical', 'critical_reason', 'weakens_protection'],
 }
@@ -539,6 +553,7 @@ ${preamble()}`
 
 const loadPlanPrompt = () => `You are RESUMING issue ${ISSUE.id} at the build stage, after a human reviewed the committed plan. Read the plan at ${A.planPath} and the spec (${SPEC_REF}) as committed on ${A.branch}.
 Return the spec fields and the plan's tasks as structured units, each task's section verbatim. Modify nothing.
+Copy root_cause, user_change and cause_class from the committed spec's own text (for a small issue, the root-fix commit body). Never return a placeholder such as "see the spec": the summary is rendered from these fields [OR-30].
 ${preamble()}`
 
 const fitPrompt = (spec, plan) => `Symptom check before build [PL-1]. Read the verbatim report at ${A.reportPath}, the spec (${spec.spec_path || SPEC_REF}) and the plan at ${plan.plan_path}.
@@ -572,7 +587,8 @@ Checklist (record every item in checks):
 4. Each commit has the required trailers and issue tag. 5. No TODO/FIXME/"not implemented" in the diff. 6. The task's plan checkboxes are ticked IN A COMMIT. Ignore uncommitted plan ticks in the working tree; they are another task's, not a finding [BD-21].
 7. Law checks by grep (every numbered law; destructive DDL; new unique constraints; secrets; sensitive identifiers in fixtures, commits or docs).
 8. NEGATIVE CONTROL, one per ACCEPTANCE ROW (each criterion in ACCEPTANCE), recorded in negative_controls [VF-3]. Make a throwaway detached worktree at the last sha (outside ${A.worktree}), run a REAL dependency install there (${(P.commands && P.commands.install) || 'the frozen-lockfile install'}; never symlink dependency dirs, module mocks break)${P.commands && P.commands.post_install ? `, then ${joinCmd(P.commands.post_install)}` : ''}, and link only the env and secrets [IS-16].
-   For each row, remove only the guard or code that row is about, run that row's tests, expect RED, and restore. A row whose tests stay GREEN is "green": its tests do not prove it. Then remove the throwaway worktree. Never stash or revert inside ${A.worktree}; other tasks are live there.
+   For each row, remove only the guard or code that row is about, run that row's tests, expect RED, and restore. A row whose tests stay GREEN is "green": its tests do not prove it.
+   On a DELETION path, record one control for EVERY guard clause in the delete's filter (age, scope, state, owner), each as its own row, not one per acceptance row [VF-3]. Then remove the throwaway worktree. Never stash or revert inside ${A.worktree}; other tasks are live there.
    The assertions must fail on the bad outcome (not merely "not throw"), and the component under test must not be mocked.
    A test that cannot load or start (module not found, missing codegen, install error) is an INFRASTRUCTURE error, never RED: fix the setup and rerun; if you cannot, record that row as infra_error.
 9. The reported symptom (${A.reportPath}) is resolved for the reporter's data shape; reason explicitly about those rows.
@@ -585,6 +601,7 @@ Kill any server you start. code_defect=true ONLY for real logic defects, not boo
 Put everything else you noticed in non_blocking_findings, each with a severity (defect | test-gap | doc-copy | follow-up | bookkeeping) and the file it is about. Tag honestly: a reachable wrong behaviour (a page stuck loading, a raw 500, misleading copy) is a defect or doc-copy even if it is outside this task [VF-31, VF-11].
 Wrong persisted state (a stale field left behind, a record that should have been cleared) or a security or eligibility hole (someone allowed who should not be) in THIS branch's code is a defect, never a follow-up [VF-31].
 A defect in this task's own files sends the task back for repair even if everything else passes.
+unfinished_work is for THIS task's files. A problem in a file outside the task's list (a sibling bug on another page) goes in non_blocking_findings as a follow-up and does not fail the task [VF-34].
 When failing, name failing_test and failure_cause. Set behaviour_choice=true only when the failure hinges on an undecided product behaviour (what SHOULD happen), not a code fault [VF-5].
 ${preamble()}`
 
@@ -612,8 +629,9 @@ Open issues on the tracker (dedupe against these):
 ${list(OPEN_ISSUES.map((i) => `#${i.number} ${i.title}${(i.labels || []).length ? ` [${i.labels.join(', ')}]` : ''}`))}
 Rules [OR-27]:
 1. Re-read each item against the code at HEAD (git diff ${BASE}...HEAD shows this branch). A defect in THIS branch's code is never a side issue: put it in dropped with reason "branch defect: not repaired" so the audit sees it.
+   A SECURITY or PRIVACY finding that touches any file in this branch's diff is a branch defect, even if the hole looks older than the branch: never a side issue. If you draft one anyway, the run routes it back to repair [OR-27].
 2. Drop anything ${A.worktree}/.out-of-scope/ (if it exists) or a closed wontfix decision rejects, anything no longer true, and bookkeeping. Every drop goes in dropped with its reason.
-3. One draft per distinct problem. If an open issue already covers it, set duplicate_of to its number and write the body as a COMMENT adding only the new evidence.
+3. One draft per distinct problem. Dedupe by CONCEPT, not only by title: compare each draft's root cause with every open issue's title and labels; the same problem in other words is a duplicate. If an open issue already covers it, set duplicate_of to its number and write the body as a COMMENT adding only the new evidence [OR-27].
 4. severity: privacy, security, data-loss, broken-flow (a user cannot finish a task) or wrong-state (wrong persisted data) for serious problems; everything else is minor. kind: ${KINDS.join(' | ')}.
 5. evidence: file:line at HEAD or a screenshot path from this run, at least one. Claim only what the evidence shows.
 6. The body starts "Found while resolving #${ISSUE.id}." and holds no names, record numbers, birth dates or customer data [PS-1, PS-2]. Never attach or reference a screenshot of real user data.
@@ -641,6 +659,8 @@ Known-flaky SET: ${JSON.stringify(P.known_flaky || [])}. A failure inside this s
 You may fix ONLY a failure you can tie to a file this branch changed (\`git diff --name-only ${BASE}...HEAD\`). Everything else goes in remaining_failures, unchanged.
 Every fix is its own commit, listed in commits; a fresh verifier will review each one. Do NOT run the CI-only checks from the shared context; list them in ci_only [TG-34].
 To triage a red spec, run it alone and in the full run; require green twice in a row.
+For EVERY remaining failure, fill failures: its spec_file, the code_paths it exercises, and flipped_on_rerun (true when it passed when rerun alone). Report diff_files from \`git diff --name-only ${BASE}...HEAD\`. A failure in no file of the diff that flips on rerun is unrelated_unstable: the run files it and it does not block [TG-35].
+Live-API suites (real third-party calls, billing, rate limits) are not gates: run unit with the profile's skip env; never run them to go green [TG-36].
 A gate that cannot load or start (module not found, missing codegen, install error) is an environment problem, never a red result: run install${P.commands && P.commands.post_install ? ` and ${joinCmd(P.commands.post_install)}` : ''}, then rerun [IS-16].
 Change a TEST only when it asserts behaviour the app deliberately no longer has, and cite the commit. Never skip, retry-wrap, raise timeouts, loosen or weaken anything. If that seems necessary, stop and report.
 Kill every server you start and prove zero listeners on the run's ports at the end.
@@ -672,6 +692,12 @@ Tag every non-blocking finding with a severity (defect | test-gap | doc-copy | f
 Docs result: ${JSON.stringify(d)}
 ${preamble()}`
 
+const docsRepairPrompt = (v) => `You are REPAIRING the docs for issue ${ISSUE.id}. An independent verifier rejected them. Fix EXACTLY this, by changing the docs to match the code (never the code to match the docs):
+${v.unfinished_work}
+Failed checks: ${JSON.stringify((v.checks || []).filter((c) => !c.ok))}
+Run the doc checks. Commit explicit paths, with trailers. Report the files and commits.
+${preamble()}`
+
 const decidePrompt = (point, question, context) => `You are the DECIDE agent for issue ${ISSUE.id}. The run reached a decision point at ${point}. You change NOTHING in the repo.
 Question (verbatim):
 ${question}
@@ -683,6 +709,7 @@ ADRs: ${(P.docs && P.docs.adr_dir) || 'n/a'}. Read the ones this question touche
 3. critical=true if ANY of these hold, and name which in critical_reason:
 ${list(CRITICAL)}
 4. weakens_protection=true when the recommended option leaves less privacy or security protection than the code at ${BASE} has (more shown while locked, data kept longer, more sent to a third party, wider access).
+5. Privacy rows [SP-18]: widens_exposure=true when the recommendation exposes more data (or touches another account's data) than the base or any decision; new_data_lifetime=true when it keeps or deletes data on a schedule no decision covers. When the recommendation only NARROWS exposure and stays inside a HUMAN decision above (not an AUTO one), set narrows_decision to that decision's index: such a row is auto-decidable even when the decision it narrows was critical.
 Report honestly: the run, not you, decides whether this is settled without the human.
 ${preamble()}`
 
@@ -711,9 +738,12 @@ function call(prompt, o) {
 // ---------- decide: auto-settle a decision point, or stop for the human [SP-20] ----------
 
 let autoUsed = 0 // reserved synchronously, so parallel tasks cannot overrun the cap
+// a narrowing inside a human decision is not critical: it cites a real human (non-AUTO) decision and widens nothing [SP-18]
+const narrows = (d) => Number.isInteger(d.narrows_decision) && typeof DECISIONS[d.narrows_decision] === 'string' && !DECISIONS[d.narrows_decision].startsWith('AUTO') && !d.widens_exposure && !d.new_data_lifetime && !d.weakens_protection
 function notAuto(d) {
   if (!d) return 'the decide agent died'
-  if (d.critical || d.weakens_protection) return `critical: ${d.weakens_protection ? 'the recommendation weakens protection (less privacy or security than today)' : d.critical_reason || 'unstated'}`
+  if (d.widens_exposure || d.new_data_lifetime) return `critical: ${d.widens_exposure ? 'widens exposure of user data' : 'a new data lifetime'}`
+  if ((d.critical && !narrows(d)) || d.weakens_protection) return `critical: ${d.weakens_protection ? 'the recommendation weakens protection (less privacy or security than today)' : d.critical_reason || 'unstated'}`
   const r = d.ranking || {}
   if (!(d.options || []).some((o) => norm(o) === norm(d.recommendation))) return 'the recommendation is not one of the options'
   if (norm(r.top) !== norm(d.recommendation)) return `the recommendation and the ranker disagree (ranker top: ${r.top})`
@@ -739,8 +769,9 @@ async function decide(point, question, context, o) {
     const r = (d && d.ranking) || {}
     return { auto: false, text: d ? menu(question, d, why) : `${question}\nNot auto: ${why}.`, detail: d ? { options: d.options, recommendation: d.recommendation, ranking: { top: r.top, p_top: r.p_top, p_second: r.p_second }, critical: !!(d.critical || d.weakens_protection), not_auto: why } : { not_auto: why } }
   }
-  DECISIONS.push(`AUTO (rec+ranker agree, p=${d.ranking.p_top}): ${d.recommendation}`)
-  result.auto_decisions.push({ point, question: String(question).slice(0, 300), choice: d.recommendation, p_top: d.ranking.p_top, p_second: d.ranking.p_second, decision_index: DECISIONS.length - 1 })
+  const within = narrows(d) ? d.narrows_decision : null
+  DECISIONS.push(`AUTO (${within === null ? '' : `narrows decision [${within}], `}rec+ranker agree, p=${d.ranking.p_top}): ${d.recommendation}`)
+  result.auto_decisions.push(Object.assign({ point, question: String(question).slice(0, 300), choice: d.recommendation, p_top: d.ranking.p_top, p_second: d.ranking.p_second, decision_index: DECISIONS.length - 1 }, within === null ? {} : { narrows_decision: within }))
   return { auto: true, choice: d.recommendation }
 }
 
@@ -755,6 +786,8 @@ function touchesTask(f, t) {
 }
 
 const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+const pathsIn = (x) => String(x || '').match(/[\w.-]*[\w-]\/[\w./-]*\.\w+|\b[\w-]+\.(?:[jt]sx?|mjs|svelte|vue|py|rb|go|rs|sql|css|html|md|ya?ml|json)\b/g) || [] // file paths named in prose
+const stripLine = (e) => String(e || '').replace(/:\d+(?::\d+)?$/, '')
 
 async function runTask(t, prefix) {
   const b = await call(buildPrompt(t, prefix), opts('build', { label: `build ${t.id}`, phase: 'Build', schema: BUILD }))
@@ -805,6 +838,12 @@ async function runTask(t, prefix) {
       const nb = (v.non_blocking_findings || []).slice()
       let own = []
       const why = []
+      // a pass whose unfinished_work names only files outside the task is a side finding for harvest, never a failure [VF-34]
+      const outside = v.passed && v.unfinished_work ? pathsIn(v.unfinished_work) : []
+      if (outside.length && !touchesTask({ finding: v.unfinished_work }, t)) {
+        nb.push({ severity: 'follow-up', finding: v.unfinished_work, file: outside[0] })
+        v = Object.assign({}, v, { unfinished_work: '' })
+      }
       if (v.passed) {
         // a pass that carries a defect in the task's own files is a rejection [VF-11]
         own = nb.filter((f) => f && typeof f === 'object' && f.severity === 'defect' && touchesTask(f, t))
@@ -900,7 +939,7 @@ function passedStages(r) {
   return {
     verify: ts.length > 0 && ts.every((t) => t.status === 'verified'),
     view: !!(r.view && !(r.view_branch_defects || []).length),
-    gates: !!(r.gates && r.gates.all_green),
+    gates: gatesOk(r.gates),
     docs: !!(r.docs && (r.docs.decided_at === 'spec' || (r.docs_verdict && r.docs_verdict.passed))),
   }
 }
@@ -935,6 +974,21 @@ function mergeFindings(r) {
   return { findings, superseded }
 }
 
+// files this branch changed: the gates agent's git diff plus every planned task's files and the docs files
+const diffFiles = () => new Set([].concat((result.gates && result.gates.diff_files) || [], ...((result.plan && result.plan.tasks) || []).map((t) => t.files || []), (result.docs && result.docs.files) || []))
+
+// a gates failure outside the diff that flips on rerun is unrelated_unstable: filed, never blocking [TG-35]
+function unrelatedUnstable(g) {
+  const diff = diffFiles()
+  return ((g && g.failures) || []).filter((f) => f && f.flipped_on_rerun === true && f.spec_file && ![f.spec_file].concat(f.code_paths || []).some((x) => diff.has(stripLine(x))))
+}
+function gatesOk(g) {
+  if (!g) return false
+  if (g.all_green) return true
+  const fs = g.failures || []
+  return fs.length > 0 && fs.length >= (g.remaining_failures || []).length && unrelatedUnstable(g).length === fs.length
+}
+
 // Harvest drafts, checked in code: real open-issue numbers, a title match the agent missed, severity decides
 // bundle, the "found while" line, identifier scrub, no evidence = no draft. Minor drafts render as ONE issue [OR-27].
 function shapeDrafts(h) {
@@ -949,10 +1003,17 @@ function shapeDrafts(h) {
   const found = `Found while resolving #${ISSUE.id}`
   const dropped = ((h && h.dropped) || []).slice()
   const drafts = []
+  const branch_defects = [] // security or privacy in this branch's own files: back to repair, never filed [OR-27]
+  const diff = diffFiles()
   const seen = new Set()
   for (const d of (h && h.side_issues) || []) {
     if (!d || !d.title) continue
     if (!(d.evidence || []).length) { dropped.push({ finding: d.title, reason: 'no evidence' }); continue }
+    if (['security', 'privacy'].includes(d.severity) && d.evidence.concat(pathsIn(d.body)).some((e) => diff.has(stripLine(e)))) {
+      branch_defects.push({ severity: d.severity, finding: d.title, evidence: d.evidence })
+      dropped.push({ finding: d.title, reason: 'branch defect: security or privacy in this branch\'s files; repair, never file' })
+      continue
+    }
     if (seen.has(norm(d.title))) continue
     seen.add(norm(d.title))
     const severity = SERIOUS.includes(d.severity) ? d.severity : 'minor'
@@ -961,14 +1022,14 @@ function shapeDrafts(h) {
     drafts.push({
       title: scrub(d.title), body, kind: KINDS.includes(d.kind) ? d.kind : 'bug', severity, evidence: d.evidence,
       duplicate_of: open.has(d.duplicate_of) ? d.duplicate_of : titleMatch(d.title),
-      bundle: severity === 'minor',
+      bundle: severity === 'minor', labels: ISSUE_LABELS,
     })
   }
   const minor = drafts.filter((d) => d.bundle && !d.duplicate_of)
   const bundle_issue = minor.length
-    ? { title: `Minor issues found while resolving #${ISSUE.id} (${minor.length})`, body: [`${found}.`, ''].concat(minor.map((d) => `- [${d.kind}] ${d.title} (${d.evidence.join(', ')})`)).join('\n') }
+    ? { title: `Minor issues found while resolving #${ISSUE.id} (${minor.length})`, body: [`${found}.`, ''].concat(minor.map((d) => `- [${d.kind}] ${d.title} (${d.evidence.join(', ')})`)).join('\n'), labels: ISSUE_LABELS }
     : null
-  return { side_issues: drafts, bundle_issue, dropped }
+  return { side_issues: drafts, bundle_issue, dropped, branch_defects }
 }
 
 function metrics(r) {
@@ -1003,11 +1064,11 @@ function compact(r) {
     decision: r.decision || null, // options, recommendation, ranking and why it was not auto [SP-20]
     auto_decisions: r.auto_decisions || [], // for review after the fact [SP-20]
     cause_class: (r.spec && r.spec.cause_class) || null,
-    root_cause: r.spec ? r.spec.root_cause : (r.diagnoses || []).map((d) => d.findings).join(' | ') || null,
+    root_cause: (r.spec ? real(r.spec.root_cause) : (r.diagnoses || []).map((d) => d.findings).join(' | ')) || null,
     confirmed_by: [].concat(...(r.diagnoses || []).map((d) => d.evidence || [])).slice(0, 2).join('; ') || null,
     ranking: cands.slice(0, 3).map((x) => ({ cause: x.cause, p: typeof x.rank_p === 'number' ? x.rank_p : null, verdict: x.verdict })),
     shared_seam: (r.spec && r.spec.shared_seam) || null,
-    user_change: (r.spec && r.spec.user_change) || null,
+    user_change: (r.spec && real(r.spec.user_change)) || null,
     plan_waves: r.plan_waves || null, // tasks, waves, replanned, serial_reason [PL-15]
     symptom_check: r.symptom_check ? { verdict: r.symptom_check.verdict, reason: r.symptom_check.reason } : null,
     paths: {
@@ -1018,9 +1079,10 @@ function compact(r) {
     },
     tasks: (r.tasks || []).map((t) => t && { id: t.id, title: t.title, status: t.status, reason: t.reason, repairs: t.repairs, commits: t.commits || [], unfinished_work: t.unfinished_work, completion: t.completion }),
     gates: g ? {
-      all_green: g.all_green,
+      all_green: g.all_green, ok: gatesOk(g),
+      unrelated_unstable: unrelatedUnstable(g).map((f) => ({ failure: f.failure, spec_file: f.spec_file })),
       table: (g.gates || []).map((x) => ({ command: x.command, passed: x.passed, skipped: x.skipped, log_path: x.log_path })),
-      remaining_failures: g.remaining_failures || [], known_flaky_matched: g.known_flaky_matched || [], ci_only: g.ci_only || P.ci_only || [],
+      remaining_failures: (g.remaining_failures || []).filter((x) => !unrelatedUnstable(g).some((f) => f.failure === x)), known_flaky_matched: g.known_flaky_matched || [], ci_only: g.ci_only || P.ci_only || [],
     } : null,
     gates_commits_verified: r.gates_commits_verified === undefined ? null : r.gates_commits_verified,
     docs: r.docs ? { docs_impact: r.docs.docs_impact, justification: r.docs.justification, files: r.docs.files, decided_at: r.docs.decided_at || 'docs', verified: r.docs_verdict ? r.docs_verdict.passed : null } : null,
@@ -1032,7 +1094,9 @@ function compact(r) {
     findings, // defects and test gaps first; the post-run audit re-triages this list [VF-11]
     side_issues: r.harvest ? r.harvest.side_issues : [], // drafts; the main loop re-checks and files them [OR-27]
     bundle_issue: r.harvest ? r.harvest.bundle_issue : null,
-    side_issue_label: (P.labels && P.labels['needs-triage']) || 'needs-triage',
+    branch_defects: r.harvest ? r.harvest.branch_defects : [], // security or privacy in this branch's files: repair, never file [OR-27]
+    side_issue_label: ISSUE_LABELS[0],
+    side_issue_labels: ISSUE_LABELS, // [OR-29]
     follow_ups: findings['follow-up'].map((f) => f.finding).concat((r.spec && r.spec.out_of_scope) || []),
     manual_checks: (r.spec && r.spec.manual_checks) || [],
     metrics: metrics(r),
@@ -1067,6 +1131,8 @@ function renderSummary(c) {
     .concat(c.tasks.filter((t) => t && t.status !== 'verified').map((t) => `${t.id} ${t.status}`))
     .concat(c.gates ? c.gates.remaining_failures : [])
     .concat(c.decision_required ? ['decision required (menu in the result)'] : [])
+    .concat((c.branch_defects || []).map((d) => `branch defect (${d.severity}): ${d.finding}`))
+    .concat(c.docs && c.docs.verified === false ? ['docs not verified'] : [])
   const next = c.status === 'stopped'
     ? (c.stage === 'plan' ? 'review the plan, then relaunch with resumeFrom: \'build\'.' : 'review the diagnosis, then relaunch without stopAfter.')
     : 'your yes to merge; then a separate yes to push.'
@@ -1075,7 +1141,7 @@ function renderSummary(c) {
     `Root cause: ${c.root_cause || 'not established'}. Confirmed by: ${c.confirmed_by || 'nothing measured'}.`,
     `Ranking: ${c.ranking.length ? c.ranking.map((x) => `${x.cause} p=${x.p === null ? '?' : x.p} (${x.verdict})`).join('; ') : 'none recorded'}.`,
     `What changes for the user: ${c.user_change || 'not stated'}.`,
-    `Gates: ${c.gates ? c.gates.table.map((x) => `${x.command} ${tick(x)}`).join(', ') + (c.gates.ci_only.length ? ` (ci_only: ${c.gates.ci_only.length})` : '') : 'not run'}${c.gates_commits_verified === null ? '' : `; gates commits verified: ${c.gates_commits_verified ? 'yes' : 'NO'}`}`,
+    `Gates: ${c.gates ? c.gates.table.map((x) => `${x.command} ${tick(x)}`).join(', ') + (c.gates.ci_only.length ? ` (ci_only: ${c.gates.ci_only.length})` : '') + (c.gates.unrelated_unstable.length ? `; unrelated_unstable (filed, not blocking): ${c.gates.unrelated_unstable.map((f) => f.spec_file).join(', ')}` : '') : 'not run'}${c.gates_commits_verified === null ? '' : `; gates commits verified: ${c.gates_commits_verified ? 'yes' : 'NO'}`}`,
     `Findings: defects ${F.defect.length}; test gaps ${F['test-gap'].length}; doc/copy ${F['doc-copy'].length}; follow-ups to file ${c.follow_ups.length}`,
     ...(c.view ? [`View: ${c.view.ran ? `${c.view.screenshots} screenshot sets in ${c.view.screenshots_dir}; branch defects open ${c.view.branch_defects_open}${c.view.repaired ? ' (after 1 repair)' : ''}` : 'did not run'}`] : []),
     `Side issues to file: ${c.side_issues.filter((d) => !d.bundle && !d.duplicate_of).length} separate, ${c.bundle_issue ? `1 bundle of ${c.side_issues.filter((d) => d.bundle && !d.duplicate_of).length}` : 'no bundle'}, ${c.side_issues.filter((d) => d.duplicate_of).length} comments on open issues`,
@@ -1085,6 +1151,8 @@ function renderSummary(c) {
     `Check by hand: ${c.manual_checks.join('; ') || 'the reporter\'s own flow'}`,
     `Open: ${open.join('; ') || 'nothing'}`,
     `Next: ${next}`,
+    // always the last line; the main loop replaces "pending" with the numbers it filed [OR-29]
+    `New issues filed: ${c.side_issues.length || c.bundle_issue ? `pending audit (${c.side_issues.length} draft(s)${c.bundle_issue ? ', 1 bundle' : ''}, labelled ${c.side_issue_labels.join(', ')})` : 'none'}`,
   ].join('\n')
 }
 
@@ -1310,6 +1378,12 @@ if (/^none\b/i.test(String(result.spec.docs_impact || '').trim())) {
   result.docs = await call(docsPrompt(result.gates), opts('docs', { label: 'docs', schema: DOCS }))
   if (result.docs && result.docs.docs_impact === 'updated') {
     result.docs_verdict = await call(docsVerifyPrompt(result.docs), opts('verify', { label: 'verify docs', phase: 'Docs', schema: VERDICT })) // [VF-6]
+    if (result.docs_verdict && result.docs_verdict.passed === false) {
+      // a docs rejection gets ONE repair round like a task; still rejected, the run is partial, never verified [VF-33]
+      const fix = await call(docsRepairPrompt(result.docs_verdict), opts('repair', { label: 'repair docs', phase: 'Docs', schema: DOCS }))
+      if (fix) result.docs = Object.assign({}, result.docs, fix, { commits: [].concat(result.docs.commits || [], fix.commits || []) })
+      result.docs_verdict = await call(docsVerifyPrompt(result.docs), opts('verify', { label: 'verify docs #2', phase: 'Docs', schema: VERDICT }))
+    }
   }
 }
 
@@ -1318,7 +1392,8 @@ if (/^none\b/i.test(String(result.spec.docs_impact || '').trim())) {
   const { findings } = mergeFindings(result)
   const items = [].concat(...SEVERITIES.filter((s) => s !== 'bookkeeping').map((s) => findings[s].filter((f) => !f.branch)))
     .concat(((result.spec && result.spec.out_of_scope) || []).map((f) => ({ severity: 'follow-up', finding: f, sources: ['spec'] })))
-    .concat(((result.gates && result.gates.remaining_failures) || []).map((f) => ({ severity: 'defect', finding: f, sources: ['gates'] })))
+    .concat(((result.gates && result.gates.remaining_failures) || []).filter((f) => !unrelatedUnstable(result.gates).some((u) => u.failure === f)).map((f) => ({ severity: 'defect', finding: f, sources: ['gates'] })))
+    .concat(unrelatedUnstable(result.gates).map((f) => ({ severity: 'test-gap', finding: `unrelated_unstable: ${f.failure} (flips on rerun; touches no file of this branch)`, file: f.spec_file, sources: ['gates'] }))) // filed, never blocking [TG-35]
   if (items.length) {
     stage('Harvest')
     const h = await call(harvestPrompt(items), opts('harvest', { label: 'harvest', schema: HARVEST }))
@@ -1329,7 +1404,11 @@ if (/^none\b/i.test(String(result.spec.docs_impact || '').trim())) {
 
 const allVerified = result.tasks.every((t) => t && t.status === 'verified')
 const viewOk = !result.spec.user_visible || (result.view && !result.view_branch_defects.length)
-result.status = allVerified && viewOk && result.gates && result.gates.all_green && result.gates_commits_verified !== false ? 'verified' : 'partial'
+const docsOk = !result.docs_verdict || result.docs_verdict.passed !== false // [VF-33]
+const branchOk = !(result.harvest && result.harvest.branch_defects.length) // [OR-27]
+result.status = allVerified && viewOk && gatesOk(result.gates) && result.gates_commits_verified !== false && docsOk && branchOk ? 'verified' : 'partial'
+if (!docsOk) result.reason = 'docs not verified'
+else if (!branchOk) result.reason = 'security or privacy defect in this branch\'s files: repair before handoff'
 const decisions = result.tasks.filter((t) => t && t.status === 'decision_required').map((t) => t.decision_required) // [VF-5]
 result.decision = (result.tasks.find((t) => t && t.decision) || {}).decision || null
 if (result.view_decision) decisions.push(result.view_decision)

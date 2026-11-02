@@ -48,8 +48,10 @@ Only when a shared component's default or behaviour changes. Walk each caller's 
 
 `privacy_security_change: <true | false>`. True when the change alters what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs). The spec never settles it: each row cites a decision passed in as `decisions` (the human's, or the run's AUTO entry, never for a weakening) or the run stops here [SP-18, SP-20].
 
-| Surface | Before | After | Human decision (decisions index) |
-|---|---|---|---|
+For each row, say whose data it deletes or keeps, including other accounts that share an identifier with the one acted on [SP-21]. A row that only narrows an existing human decision cites that decision's index and may be auto-decided; a widening or a new data lifetime stops for the human [SP-18].
+
+| Surface | Before | After | Whose data (deleted / kept; other accounts sharing an identifier) | Human decision (decisions index) |
+|---|---|---|---|---|
 
 ## What changes for the user
 

@@ -112,6 +112,8 @@ Every non-blocking finding carries a severity: `defect` (wrong behaviour a user 
 
 **A pass that carries a `defect` finding in the task's own files is a rejection.** The run turns it into `unfinished_work` and sends it to repair, so a defect never rides along on a green verdict [VF-11].
 
+**A pass whose `unfinished_work` names only files outside the task is a side finding.** The run moves it into the findings list as a follow-up for the harvest and clears it from the verdict, so it never fails the task or reaches the task's repair prompt [VF-34].
+
 `code_defect` is true only for real logic defects, not bookkeeping such as a missing trailer or an unticked box. Keeping the two apart keeps the repair-rate metric honest [VF-4, CO-2].
 
 **Repair loop** [VF-5]:
@@ -123,6 +125,8 @@ Every non-blocking finding carries a severity: `defect` (wrong behaviour a user 
 - **A behaviour choice stops the loop.** A failing verdict names `failing_test`, `failure_cause` and `behaviour_choice`. When the same test fails for the same cause after two repairs and the cause is an undecided product behaviour, the decide step settles it if it may (the next repair implements the chosen behaviour); otherwise the task stops as `decision_required` with the question for the human. No third repair [VF-5, SP-20].
 
 **Re-triage "non-blocking" findings by severity**, from the merged list, defects and test gaps first. Several turn out to be real: a 500 where a 400 belonged, an empty input reaching a payment provider as an opaque 502, a silent fail-open, a page stuck on Loading [VF-11, VF-31].
+
+**Docs get one repair round.** When the docs verifier rejects the docs, one repair agent fixes the docs to match the code and a second verifier checks them. Still rejected, the run is `partial` with reason "docs not verified", never `verified` [VF-33].
 
 **Gates commits get their own verifier.** When the gates agent commits a fix, one fresh verifier reviews `git diff <head_before>..HEAD`: each hunk fixes a named gate failure in this branch's files, and nothing was weakened. The result is `gates_commits_verified` [TG-7].
 

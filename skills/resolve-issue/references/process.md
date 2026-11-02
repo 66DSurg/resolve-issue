@@ -135,9 +135,9 @@ Exit: either docs are updated or "no docs needed" is recorded with a real justif
 
 Entry: the merged findings list from every stage (diagnosis `side_findings`, verifiers, VIEW, gates, docs), with stale findings already dropped [VF-32], plus the spec's out-of-scope follow-ups, the gates' remaining failures, `args.openIssues` and the repo's `.out-of-scope/`. No findings, no agent.
 Agents: 1, mid tier. It drafts and never files.
-Work: re-read each item against the code at HEAD; drop branch defects (those must be repaired, and the audit sees the drop), rejected or out-of-scope items, and anything no longer true. Draft one issue per distinct problem: `{title, body, kind, severity, evidence, duplicate_of, bundle}` [OR-27].
-The run then checks the drafts in code: `duplicate_of` must name an open issue, and a title match the agent missed sets it; severity decides `bundle` (privacy, security, data loss, a broken flow and wrong persisted state are separate; the rest is one bundle issue per run); a draft with no evidence is dropped; every body says "Found while resolving #N"; the profile's `privacy.identifier_patterns` are scrubbed.
-Exit: `side_issues`, `bundle_issue` and `side_issue_label` in the result. The main loop files them after the audit (SKILL.md Step 4), unless `issues.auto_file: false`.
+Work: re-read each item against the code at HEAD; drop branch defects (those must be repaired, and the audit sees the drop), rejected or out-of-scope items, and anything no longer true. Draft one issue per distinct problem: `{title, body, kind, severity, evidence, duplicate_of, bundle}`, deduped by concept (each draft's root cause against every open issue's title and labels), not only by title [OR-27].
+The run then checks the drafts in code: `duplicate_of` must name an open issue, and a title match the agent missed sets it; severity decides `bundle` (privacy, security, data loss, a broken flow and wrong persisted state are separate; the rest is one bundle issue per run); a draft with no evidence is dropped; every body says "Found while resolving #N"; the profile's `privacy.identifier_patterns` are scrubbed; a security or privacy draft whose evidence touches a file in the branch's diff becomes a `branch_defects` entry and makes the run partial, never a side issue [OR-27]; every draft carries `labels` (the needs-triage label plus `labels.side_issue` when the profile sets one) [OR-29].
+Exit: `side_issues`, `bundle_issue`, `branch_defects` and `side_issue_labels` in the result. The main loop files them after the audit (SKILL.md Step 4), unless `issues.auto_file: false`.
 
 ## 10. Stage 8: summary and stop
 
@@ -156,4 +156,4 @@ These rules apply if the project runs bots for triage, queue ranking or housekee
 
 **Decision points.** Every stop for a decision first runs one decide agent (options, recommendation, the profile ranker's distribution, criticality); code makes it AUTO or a stop, at most 3 AUTO per run, and `result.auto_decisions` lists them for the audit [SP-20].
 
-**Resuming after a decision.** Relaunch with `resumeFromRunId` and change only `decisions`; any other arg change re-runs the stages whose prompts include it [OR-28].
+**Resuming after a decision.** Relaunch with `resumeFromRunId` and change only `decisions`; any other arg change re-runs the stages whose prompts include it [OR-28]. A resume with `resumeFrom: 'build'` re-reads the committed spec for the root cause, user change and cause class; a "see the spec" placeholder counts as missing and never reaches the summary [OR-30].
