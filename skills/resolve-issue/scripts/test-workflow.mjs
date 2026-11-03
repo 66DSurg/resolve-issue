@@ -36,7 +36,7 @@ async function run({
   size = 'medium', tasks = TASKS, measured = false, docsImpact = 'none', gatesCommits = [], gatesPass = true, extra = {},
   serialReason = 'T4 and T5 form a cycle', replanTasks = null, buildCommits = null, verdictExtra = () => ({}), callerFlows = [],
   specExtra = {}, view = () => ({ screenshots: [], findings: [], processes_left: 0 }), harvest = () => ({ side_issues: [], dropped: [] }),
-  gatesGreen = true, diagExtra = {}, decide = null, specSeq = null, docsPass = () => true, gatesExtra = {}, planSha = PLAN_SHA,
+  gatesGreen = true, diagExtra = {}, decide = null, specSeq = null, docsPass = () => true, gatesExtra = {}, planSha = PLAN_SHA, typeMissing = false, logs = [], thrown = [],
 } = {}) {
   const calls = []
   const seen = {}
@@ -44,6 +44,8 @@ async function run({
   let spent = 0
   const specFields = { root_cause: 'r', shared_seam: 'h', mechanism_explains_reported_data: true, user_change: userChange, out_of_scope: [], docs_impact: docsImpact, docs_justification: 'internal', caller_flows: callerFlows, user_visible: false, privacy_security_change: false, ...specExtra }
   const agent = async (prompt, o = {}) => {
+    if (typeMissing && o.agentType) thrown.push(o.label)
+    if (typeMissing && o.agentType) throw new Error(typeMissing === true ? `agent type '${o.agentType}' not found` : typeMissing)
     const label = o.label || ''
     calls.push({ label, model: o.model, effort: o.effort, agentType: o.agentType, prompt })
     spent += 1000
@@ -74,7 +76,7 @@ async function run({
     throw new Error('unexpected label ' + label)
   }
   const parallel = async (thunks) => Promise.all(thunks.map((t) => t().catch(() => null)))
-  const log = (m) => { if (m.startsWith('Wave:')) waves.push(m) }
+  const log = (m) => { logs.push(m); if (m.startsWith('Wave:')) waves.push(m) }
   const budget = { total: null, spent: () => spent, remaining: () => Infinity }
   const args = Object.assign({ issue: { id: '1', title: 't' }, size, tiers: { build: { model: 'mid' }, repair: { model: 'top' } }, maxParallel: 4 }, extra)
   const res = await wf(args, agent, parallel, null, () => {}, log, budget)
@@ -855,5 +857,22 @@ const bullets = (summary) => { const l = summary.split('\n'); const i = l.indexO
   const c = JSON.parse(execFileSync('python3', [new URL('./run-cost.py', import.meta.url).pathname, wf]).toString())
   const one = 0.1 * 1000 + 1.25 * 100 + 10 + 5 * 20 // 335 units per turn at weight 1
   assert.deepEqual([c.stages.Verify.turns, c.stages.Verify.units, c.stages.Repair.units], [2, 2 * one, Math.round(0.6 * one)], JSON.stringify(c))
+}
+// an agent type that does not resolve never breaks a run: one retry without it, one log line, then the default agent
+{
+  const logs = []
+  const thrown = []
+  const { res, calls } = await run({ typeMissing: true, logs, thrown })
+  assert.ok(thrown.length <= 2, `failed attempts after the first fallback: ${thrown.join(', ')}`) // the two parallel diagnosers may both try once
+  assert.equal(res.status, 'verified')
+  assert.equal(res.metrics.agent_type_fallback, true)
+  assert.equal(logs.filter((m) => /resolve-worker agent not loaded \(restart Claude Code after installing\); using the default agent/.test(m)).length, 1)
+  assert.equal(calls.length, (await run()).calls.length, 'later calls skip the agent type and pay no failed attempt')
+  assert.equal((await run()).res.metrics.agent_type_fallback, false)
+  const ol = []
+  const other = await run({ typeMissing: 'rate limited', logs: ol })
+  assert.equal(other.res.status, 'failed', 'any other error is not retried without the type')
+  assert.equal(other.res.reason, 'all diagnosers died')
+  assert.ok(!ol.some((m) => /not loaded/.test(m)) && !other.res.metrics.agent_type_fallback)
 }
 console.log('PASS: workflow dry-run checks')

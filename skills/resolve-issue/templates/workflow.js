@@ -812,9 +812,21 @@ function stage(title) {
   phase(title)
   cur = { stage: title, agents: 0, from: spentNow() }
 }
-function call(prompt, o) {
+// Agent files load only at session start: an uninstalled or not-yet-loaded resolve-worker throws "agent type ... not
+// found". Never let the default break a run: retry once without agentType, and skip it from then on [CO-9].
+let typeFallback = false
+const withoutType = (o) => { const p = Object.assign({}, o); delete p.agentType; return p }
+async function call(prompt, o) {
   if (cur) cur.agents++
-  return agent(prompt, o)
+  if (typeFallback && o && o.agentType) o = withoutType(o)
+  try {
+    return await agent(prompt, o)
+  } catch (e) {
+    if (!(o && o.agentType && /agent type .* not found/i.test(String((e && e.message) || e)))) throw e
+    if (!typeFallback) log(`${o.agentType} agent not loaded (restart Claude Code after installing); using the default agent`)
+    typeFallback = true
+    return agent(prompt, withoutType(o))
+  }
 }
 
 // ---------- decide: auto-settle a decision point, or stop for the human [SP-20] ----------
@@ -1133,6 +1145,7 @@ function metrics(r) {
     auto_decisions: (r.auto_decisions || []).length, // [SP-20]
     superseded_findings: mergeFindings(r).superseded, // [VF-32]
     agents: STAGES.reduce((n, s) => n + s.agents, 0),
+    agent_type_fallback: typeFallback, // the worker type did not resolve; stages ran as the default agent [CO-9]
     spent_unit: 'output_tokens', // stages[].spent counts output tokens only, never the cost [CO-9]
     stages: STAGES,
   }
