@@ -89,9 +89,10 @@ def main():
     if n >= 500:
         errors.append(f"SKILL.md is {n} lines (limit 500)")
 
-    print(f"lessons: {len(ids)} ({len(core)} core, {len(ids) - len(core)} in packs), core cited: {len(required & cited)}/{len(required)}")
-    for e in errors:
+    for e in errors:  # agent-quiet: PASS in one line, or the failing items only [CO-9]
         print("FAIL", e)
+    if not errors:
+        print(f"PASS: {len(ids)} lessons ({len(core)} core, all cited), privacy clean")
     sys.exit(1 if errors else 0)
 
 

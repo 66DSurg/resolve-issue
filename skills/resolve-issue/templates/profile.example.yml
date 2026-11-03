@@ -98,11 +98,19 @@ human: {tests_on: staging}
 #   gates: {model: <mid>, effort: medium}
 #   docs: {model: <mid>, effort: medium}
 #   harvest: {model: <mid>, effort: medium}
+#   completeness: {effort: medium}
+#   docs_verify: {effort: medium}
+#   view_capture: {model: <mid>}   # view.split only
 #   _excluded: [<tiers that failed the obey probe>]
 # budget:
 #   max_concurrent_runs: 3
 #   max_parallel_builders: 4
 #   e2e_in_worktree: false        # true only if it needs no shared resources
+# agent_type: resolve-worker     # null = the default workflow agent; install templates/agents/resolve-worker.md [CO-9]
+# filter_test_output: false       # true once scripts/hooks/filter-test-output.py is installed for workers
+# spec_plan_merged_upto: 0        # N > 0: one spec+plan agent when diagnoses expect <= N tasks
+# view: {split: false}            # capture agent + judge
+# verify: {delta_reverify: false, diff_scope: false}   # trial switches; both narrow the verifier
 # ranker:
 #   cmd: <command reading JSON on stdin, or null for an explicit in-prompt ranking; null turns auto-decisions off>
 # decisions:                      # the decide step [SP-20]

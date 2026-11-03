@@ -17,6 +17,7 @@ The gates stage runs exactly the gate list built from the profile, in order, and
 
 - **Run every gate layer before every commit**: typecheck, lint/format, unit, e2e, build and doc checks. Put the test counts in the commit message [TG-1].
 - **After any edit, run the whole affected suite**, not only the file you touched [TG-4].
+- **Quiet output at the reporter, not by cutting.** Under `CLAUDECODE=1`, suites print failures plus counts (vitest `dot`, Playwright `line`); agents write full output to a log and grep it. A shortened output keeps its head and tail and names the full log; never trust a tail alone [CO-9, TG-2].
 - **After merging two branches that were each green**, re-run the full gates, e2e included, on the combined result [TG-5].
 - **Decide per issue whether e2e runs inside the run.** If it needs shared resources (a DB, default ports) that another worktree is using, skip it there and run it from the main checkout at merge. Report "skipped" as skipped, never as passed [TG-10]. When it does run in a worktree, use the isolated runner in `references/isolation.md` [IS-4].
 - **When the test runner is unavailable**, fall back to typecheck, build and a static diff review. Rely on CI for the definitive run, and say plainly that this is what you did [TG-12].

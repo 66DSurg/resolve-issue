@@ -18,6 +18,9 @@ Keep the tier table in the profile (`tiers:`). It is the single source of truth,
 | docs | mid | medium | prose within fixed rules, and a verifier checks the claims |
 | view | verify tier (strongest) | high | a judgment on screenshots; it builds nothing |
 | harvest | mid | medium | drafts only; the main loop re-checks every draft before filing [OR-27] |
+| completeness | verify's model | medium | a cross-check of units against the tree [CO-9] |
+| docs_verify | verify's model | medium | claims against code; a rejection still gets its repair round |
+| view_capture | build | (build) | `view.split` only: screenshots, no judgment |
 
 `model: null` (or `inherit`) means "use the session's model".
 
@@ -27,6 +30,16 @@ Keep the tier table in the profile (`tiers:`). It is the single source of truth,
 - **Probe a tier with a trivial instruction before giving it any stage that can write or commit** [CO-3]. Send "Reply with exactly: ok" and exclude tiers that fail. The smallest tier once invented a task, wrote 342 lines, committed them to the main line under the human's name without the trailer, then amended its own commit. Record exclusions in the profile (`tiers._excluded`).
 - **Stub paid external model calls in e2e and CI by default and assert zero billed calls** [CO-4]. Keep a tiny real-API smoke test (about 2 calls) on release tags only. Gate live-model suites behind a skip flag locally as well as in CI. Feature-detect stub support so older branches still run. The stub guard fails closed [PS-26].
 The product's own runtime model costs (recipes, extractor cascades, request-path models, burn) are in `references/packs/cost.md`.
+
+## Token diet
+
+Cost lives in context, not in output: across 10 full runs, cache reads and writes were 92% of the cost and output 8%, and about half went on the fixed start-up context each agent loads [CO-9]. So:
+- **Fewer agents first.** A spawn costs about 2.3 times an average turn. Never spawn an agent for under about 6 turns of work; fold the step into an agent that already runs (a resume with `resumePlan` skips the load-plan agent; completeness never runs for one task).
+- **Leaner agents next:** the `resolve-worker` type and the rest of `references/project-profile.md` § Token diet.
+- **Cap tool output at the source**, never silently: logs to files, grep the failing set, read files and diffs by range.
+- **Pass pointers, not copies:** the plan by section at its commit, the diagnoses as compact fields.
+- **Builders write the shortest correct diff.** Terse-prose modes do not pay here (output is 8%; one measured +7% tokens on agent work). Never trim the verifiers, the gates verifier, the docs verifier, harvest or the audit.
+- **Measure** with `python3 scripts/run-cost.py <transcript dir>`, logged as `metrics.cost`, and revert any change that raises repairs or rejections [CO-2].
 
 ## Budget and concurrency
 

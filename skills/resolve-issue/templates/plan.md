@@ -41,10 +41,10 @@ Acceptance: <observable outcome the verifier checks, including the negative cont
 
 ## Machine-readable units
 
-The plan agent ALSO returns these as structured output. The build iterates over the returned list, never over a hand-written one.
+The plan agent ALSO returns these as structured output, as pointers into this file at the commit that holds it (`plan_sha`), never as copies of the code [CO-9]. The build iterates over the returned list, never over a hand-written one.
 
 ```json
 [
-  {"id": "T1", "title": "...", "files": ["..."], "depends_on": [], "instructions": "the T1 section verbatim", "acceptance": "..."}
+  {"id": "T1", "title": "...", "files": ["..."], "depends_on": [], "section": {"heading": "T1: <title>", "start_line": 20, "end_line": 48}, "acceptance": "..."}
 ]
 ```

@@ -63,8 +63,8 @@ The verifier gets the commit SHAs, the task, its acceptance criteria and the bui
 Checklist. Each item exists because a verifier once missed that class of defect [VF-2]:
 
 1. The files changed as described, and **the scope is limited to the task's files** (`git show --stat HEAD`) [PL-4].
-2. The named tests exist AND pass when **you** run them.
-3. Typecheck and lint are clean.
+2. The task's named tests exist AND pass when **you** run them. Only those: the full suites and e2e belong to the gates stage, unless a named test is e2e [CO-9].
+3. Typecheck and lint are clean for the touched packages.
 4. A commit exists with the required trailers and issue tag [GR-4].
 5. The diff contains no `TODO`, `FIXME` or "not implemented".
 6. The plan's checkboxes are ticked in a commit. Uncommitted ticks in the working tree belong to another live task: ignore them, they are not a finding [BD-21].

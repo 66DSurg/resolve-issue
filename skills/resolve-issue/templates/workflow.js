@@ -28,6 +28,7 @@
 //   maxParallel:  4,
 //   stopAfter:    null | 'diagnose' | 'plan',    // opt-in human checkpoint; null (default) runs to the end [SP-1]
 //   resumeFrom:   null | 'build',                // 'build' reads the committed plan at planPath and builds it, plus root cause, user change and cause class from the committed spec [OR-30]
+//   resumePlan:   null | {...},                  // with resumeFrom 'build': the stopped run's spec fields + plan_path, plan_sha, tasks (from its journal); skips the load-plan agent [CO-9]
 //   scratchDir:   '/abs/scratch',                // OUTSIDE the worktree: logs → <scratchDir>/<issue>/logs, screenshots → .../screenshots [IS-19]
 //   openIssues:   [{ number: 12, title: '...', labels: ['bug'] }],  // fetched by the main loop with the tracker CLI; the harvest dedupes against it [OR-27]
 //   decisions:    [],                            // the human's answers to an earlier decision_required, verbatim; spec rows cite them by index [SP-18].
@@ -42,6 +43,10 @@
 // Every decision point first goes to one DECIDE agent: options, its recommendation, the profile ranker's distribution and a
 // criticality call. Code decides whether it is AUTO (not critical, rec = ranker top, margin >= profile.decisions.margin);
 // at most AUTO_CAP per run, listed in result.auto_decisions. Anything else stops as decision_required, as before [SP-20].
+// Token diet [CO-9]: every agent runs as the lean resolve-worker agent type (profile.agent_type; null = the default
+// workflow agent), prompts start with the shared preamble so agents share a cached prefix, the plan is passed by
+// pointer (section line ranges at the plan's commit), and tool output is capped at the source. metrics.stages[].spent
+// is OUTPUT tokens only; the real cost comes from scripts/run-cost.py over the run's transcripts.
 // Wall-clock time is not available here: the main loop records start and end in the run log.
 // The run ends at a verified branch. It never pushes, tags or releases [HG-1].
 
@@ -104,14 +109,25 @@ const LABELS = P.labels || {}
 const ISSUE_LABELS = [LABELS['needs-triage'] || 'needs-triage'].concat(LABELS.side_issue ? [LABELS.side_issue] : []) // every filed side issue carries these [OR-29]
 const PLACEHOLDER = /^\W*(see|refer to|in) (the )?(committed )?(spec|plan)\b/i // never shipped in a summary [OR-30]
 const real = (x) => (x && !PLACEHOLDER.test(String(x)) ? x : null)
+const AGENT_TYPE = P.agent_type === undefined ? 'resolve-worker' : P.agent_type // lean worker; templates/agents/resolve-worker.md [CO-9]
+const VIEW_SPLIT = !!(P.view && P.view.split) // off: one VIEW agent captures and judges
+const DELTA_REVERIFY = !!(P.verify && P.verify.delta_reverify) // off: every re-verify is a full one. On WEAKENS adversarial verification [CO-9]
+const DIFF_SCOPE = !!(P.verify && P.verify.diff_scope) // off: trial switch; on, verifiers read only the task's diff and its callers
+const MERGE_UPTO = Number.isInteger(P.spec_plan_merged_upto) ? P.spec_plan_merged_upto : 0 // off: spec and plan are separate agents for medium issues
+let MERGED = SMALL // one spec+plan agent; set again after diagnosis when MERGE_UPTO applies
 
 // ---------- helpers ----------
 
+// stages with no tier of their own borrow one; mechanical checks default to medium effort [CO-9]
+const TIER_FALLBACK = { completeness: 'verify', docs_verify: 'verify', view_capture: 'build' }
+const TIER_EFFORT = { completeness: 'medium', docs_verify: 'medium', harvest: 'medium' }
 function opts(stage, extra) {
-  const t = T[stage] || {}
+  const t = Object.assign({}, T[TIER_FALLBACK[stage]], TIER_EFFORT[stage] ? { effort: TIER_EFFORT[stage] } : {}, T[stage])
   const o = Object.assign({}, extra)
   if (t.model) o.model = t.model // null/absent = inherit the session model
   if (t.effort) o.effort = t.effort
+  const type = 'agent_type' in t ? t.agent_type : AGENT_TYPE // a tier may set agent_type: null to keep the default agent
+  if (type) o.agentType = type
   return o
 }
 
@@ -143,7 +159,7 @@ const LAWS = [
   'Evidence beats ranking: probe and measure; when they disagree, evidence wins and you record the overrule.',
   'Fix the REPORTED symptom at the shared seam every caller routes through; look for siblings of the same class.',
   'Every fix carries a regression test that fails on the old code and passes on the new.',
-  'Read whole logs: save full output to a file and grep it for "failed"; compare failing SETS, not counts or tails.',
+  'Read whole logs: write the FULL output to a log file, grep ALL of it for "failed", and bring back only the failing set or the summary; compare failing SETS, not counts or tails.',
   'Never skip, retry-wrap, loosen, raise timeouts on, or delete a test or guard to go green. Stop and report instead.',
   'Stage explicit paths only. Never `git add -A` / `git add .`.',
   'Stay in your worktree, branch and ports. Kill every server you start by process group, then prove it gone with ps.',
@@ -180,7 +196,11 @@ Env: source ${(P.env && P.env.source) || '(none)'} before tests. Secrets are LIN
 Logs: write server and test logs under ${LOG_DIR}/<port>/ (OUTSIDE the worktree, never committed), never a fixed shared path or a directory inside the worktree${((P.env && P.env.fixed_paths) || []).length ? ` (the test runner writes these fixed paths; override them: ${P.env.fixed_paths.join(', ')})` : ''} [IS-18, IS-19].
 ${P.env && P.env.shared_db ? 'The dev database is SHARED with other worktrees: functions or migrations another run applied may be there, and yours land on theirs. Use this run\'s own schema or database name when the profile gives one; a failure from another branch\'s DB objects is reported, never fixed [IS-17, TG-11].\n' : ''}Ports: use ONLY backend ${A.ports && A.ports.backend} and frontend ${A.ports && A.ports.frontend} with strict-port flags. NEVER use ${((P.ports && P.ports.reserved) || []).join(', ') || 'the developer default ports'}. Check ownership with lsof before starting a server. Start each server in its own process group (setsid, or record its PGID) and stop it with kill -- -<PGID>; then prove with \`ps -eo pid,pgid,ppid,command\` that none of your processes survive (orphans with PPID 1, such as a dev server's bundler child, count), not just with lsof [IS-20].
 Search with \`command grep -rn\` or \`rg\` (shell wrappers can skip files).
-
+TOOL OUTPUT stays in your context and is re-read on every later turn, so cap it at the source [CO-9]:
+- Tests, suites, builds: \`<cmd> > ${LOG_DIR}/<name>.log 2>&1; echo exit=$?\`, then \`grep -nE 'fail|error|✗' <log> | head -40\` and \`tail -5 <log>\` for the summary line. Never print a whole log, and never cut silently: when you shorten output, keep its head AND tail and print "… truncated, full log at <path>".
+- Git: \`git show --stat <sha>\` first, then \`git diff <sha>^! -- <file>\` per file in scope. Never a bare \`git show <sha>\` of a multi-file commit.
+- Files: \`rg -n '<pattern>' <path>\`, then \`sed -n '<a>,<b>p' <path>\` ranges. No \`cat\` of a file over 200 lines. Read the spec and plan by section, not whole.
+${P.filter_test_output ? `A hook rewrites test commands: their output is the failing lines plus a "full log: <path> exit=<n>" line. That exit code is the real one; grep that log for law 5.\n` : ''}
 Decision rule: do not stop or ask the human. Rank the real alternatives${P.ranker && P.ranker.cmd ? ` with \`${P.ranker.cmd}\` (JSON on stdin, >=2 options)` : ' explicitly with probabilities'}, let evidence decide, and record what you decided and why.
 
 Commits: subject "${(P.git && P.git.subject) || '<summary> (#{n})'}" with n=${ISSUE.id}; message body ends with these trailers, exactly:
@@ -222,6 +242,7 @@ const DIAG = {
     packs: { type: 'array', items: { type: 'string' }, description: 'names of domain packs whose trigger this issue meets' },
     side_findings: { type: 'array', description: 'real problems you saw that are NOT this issue\'s cause', items: { type: 'object', properties: { severity: { type: 'string', enum: SEVERITIES }, finding: { type: 'string' }, file: { type: ['string', 'null'] } }, required: ['severity', 'finding'] } },
     confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+    expected_tasks: { type: ['integer', 'null'], description: 'how many build tasks the fix likely needs; null if unsure' },
   },
   required: ['method', 'findings', 'evidence', 'candidates', 'ruled_out', 'open_questions', 'confidence'],
 }
@@ -272,20 +293,26 @@ const TASK = {
     title: { type: 'string' },
     files: { type: 'array', items: { type: 'string' } },
     depends_on: { type: 'array', items: { type: 'string' } },
-    instructions: { type: 'string', description: 'the full task section from the plan, verbatim, including code and checkboxes' },
+    section: {
+      type: 'object',
+      description: 'where this task\'s section sits in the committed plan file: a POINTER, never a copy of its code [CO-9]',
+      properties: { heading: { type: 'string' }, start_line: { type: 'integer' }, end_line: { type: 'integer' } },
+      required: ['heading', 'start_line', 'end_line'],
+    },
     acceptance: { type: 'string' },
   },
-  required: ['id', 'title', 'files', 'depends_on', 'instructions', 'acceptance'],
+  required: ['id', 'title', 'files', 'depends_on', 'section', 'acceptance'],
 }
 
 const PLAN = {
   type: 'object',
   properties: {
     plan_path: { type: 'string' },
+    plan_sha: { type: 'string', description: 'full SHA of the commit holding the plan as written: git log -1 --format=%H -- <plan path>' },
     tasks: { type: 'array', items: TASK },
     serial_reason: { type: ['string', 'null'], description: 'only when every task must run after the one before: the real dependency, in one sentence [PL-15]' },
   },
-  required: ['plan_path', 'tasks'],
+  required: ['plan_path', 'plan_sha', 'tasks'],
 }
 
 // small issues and resume: spec fields and plan units in one return
@@ -389,6 +416,12 @@ const GATES = {
   required: ['head_before', 'all_green', 'gates', 'failures_fixed', 'remaining_failures'],
 }
 
+const VIEW_CAPTURE = {
+  type: 'object',
+  properties: { screenshots: { type: 'array', items: { type: 'object', properties: { target: { type: 'string' }, viewport: { type: 'string' }, before: { type: ['string', 'null'] }, after: { type: ['string', 'null'] } }, required: ['target', 'viewport', 'before', 'after'] } }, processes_left: { type: 'integer' } },
+  required: ['screenshots', 'processes_left'],
+}
+
 const VIEW = {
   type: 'object',
   properties: {
@@ -473,16 +506,26 @@ const DECIDE = {
 }
 
 // ---------- prompts ----------
+// Every prompt starts with the shared preamble, then the role's static rules, and ends with the task-specific
+// tail, so agents of one run share a cached prefix [CO-9].
 
-const diagPrompt = (angle) => `You are DIAGNOSING issue ${ISSUE.id}. Do not fix anything.
-This is attempt ${A.attempt || 1} on this surface.${(A.priorAttempts || []).length ? ' Read these earlier attempts FIRST:\n' + list(A.priorAttempts) : ''}
-ALREADY RULED OUT (do not re-investigate):
-${list(A.ruledOut)}
-KNOWN SUSPECTS (confirm or eliminate each):
-${list(A.suspects)}
-Your angle: ${angle}.
+// diagnoses reach the spec as the fields it needs, compact; the full outputs stay in the run journal [CO-9]
+const diagBrief = (ds) => JSON.stringify(ds.map((d) => ({ findings: d.findings, evidence: d.evidence, candidates: d.candidates, ruled_out: d.ruled_out, open_questions: d.open_questions, distinguishing_question: d.distinguishing_question || null, decision_required: d.decision_required || null })))
 
-Method, in order [DG-7]: (1) trace the real code path end to end, from the entry point the user touched, citing file:line;
+// a task's instructions are a POINTER into the plan at its commit, never the working tree: the build ticks the plan,
+// and nobody may edit their own instructions [CO-9]
+const planSha = () => (result.plan && result.plan.plan_sha) || '(plan sha missing)'
+const planFile = () => (result.plan && result.plan.plan_path) || A.planPath
+function taskRef(t) {
+  const s = t.section || {}
+  return `TASK: your instructions are the plan section "${s.heading}". Read it AS COMMITTED, never from the working tree:
+  git show ${planSha()}:${planFile()} | sed -n '${s.start_line},${s.end_line}p'
+ACCEPTANCE: ${t.acceptance}`
+}
+
+const diagPrompt = (angle) => `${preamble()}
+You are DIAGNOSING issue ${ISSUE.id}. Do not fix anything.
+Method, in order [DG-7]: (1) trace the real code path end to end, from the entry point the user touched, citing file:line (find with rg -n, read ranges);
 (2) list EVERY candidate cause, the obvious one included; (3) rank them relatively, never yes/no;
 (4) gather evidence that tells the top candidates apart: write and run a probe, a failing test or a scripted repro
 through the real entry point, and report MEASURED values and the method in evidence; (5) state the confirmed cause, or what remains open and what would settle it.
@@ -494,9 +537,16 @@ If the only fixes are destructive or lose data, fill decision_required with a me
 Domain packs live in ${SKILL}/references/packs/. The first paragraph of each says when it applies; return in packs every name whose trigger this issue meets.
 Delete throwaway probes; keep a reproduction only if it is a proper regression test (and say where).
 Real problems you meet that are NOT this issue's cause go in side_findings (severity, one sentence with file:line); never chase them.
-${preamble()}`
+Estimate expected_tasks: how many build tasks the fix needs (null if unsure).
+This is attempt ${A.attempt || 1} on this surface.${(A.priorAttempts || []).length ? ' Read these earlier attempts FIRST:\n' + list(A.priorAttempts) : ''}
+ALREADY RULED OUT (do not re-investigate):
+${list(A.ruledOut)}
+KNOWN SUSPECTS (confirm or eliminate each):
+${list(A.suspects)}
+Your angle: ${angle}.`
 
 const specRules = () => `Spec rules: fix the root cause at the shared seam every caller routes through, with the smallest change that fully resolves the REPORTED symptom.
+Read the code the diagnoses cite by line range (rg -n, sed -n), not whole files.
 Include: exact user-facing copy; what changes for the user, in plain words (user_change); tests: the regression test is the diagnosis reproduction, at the highest level that still reproduces the reported symptom, and fails before the fix; name the interface each test drives (page, route, CLI, public function); an acceptance fixture shaped like the reporter's anonymised data; docs impact ("none" plus a real justification, or the files);
 EXPLICITLY OUT OF SCOPE (adjacent cleanup becomes follow-up issues, listed by title); what agents cannot validate (manual checks); honest risks; assumptions made instead of asking.${A.agentBriefPath ? `\nThe agent brief at ${A.agentBriefPath} is input: its acceptance criteria and out-of-scope list carry into the spec (the "Agent brief:" line).` : ''}
 If no diagnosed mechanism produces the symptom on the reported data, say so (mechanism_explains_reported_data=false) and specify the measurement needed or a fix correct regardless plus in-product evidence capture.
@@ -510,80 +560,79 @@ If a diagnosis raised a decision_required menu (destructive or data-loss-sensiti
 Set cause_class to the root cause's class in one word.\nDecisions for this run (verbatim, by index; "AUTO (…)" entries were taken by the run's decide step when its recommendation and the ranker agreed):
 ${DECISIONS.length ? DECISIONS.map((d, i) => `  [${i}] ${d}`).join('\n') : '  (none)'}`
 
-const PLAN_RULES = `Plan rules: the plan is where each build task's code is written. Put ACTUAL code and exact signatures in it. Banned: "TBD", "add appropriate handling", "similar to Task N".
-Use ${SMALL ? 'exactly 1 task' : '3 to 9 tasks (slice hard at about 10)'}, root fix first. Each task is a vertical slice that delivers observable behaviour through a real interface; never split by layer.
+const planRules = () => `Plan rules: the plan FILE is where each build task's code is written. Put ACTUAL code and exact signatures in it. Banned: "TBD", "add appropriate handling", "similar to Task N".
+Use ${SMALL ? 'exactly 1 task' : MERGED ? `1 to ${MERGE_UPTO} tasks` : '3 to 9 tasks (slice hard at about 10)'}, root fix first. Each task is a vertical slice that delivers observable behaviour through a real interface; never split by layer.
 The root-fix task is test-first, as checkbox steps: write the failing test through the interface it names → run it and SEE it fail → implement → see it pass → typecheck/lint → commit explicit paths. Other tasks add tests where they change behaviour.
 List every file each task touches and mark depends_on accurately. File overlap is used only to schedule waves (tasks sharing a file never run at once). Docs belong to the docs stage, never to a task.
 Copy the relevant laws into each task. Tell tasks which shared components and helpers to reuse instead of re-implementing them. Tests prefer real collaborators to mocks.
-Return the tasks as structured units; "instructions" is that task's full section, verbatim, code included.
+Commit the plan file, then return the tasks as structured units with POINTERS, not copies [CO-9]: each task's section is its heading and its start_line/end_line in the committed plan file; plan_sha is that commit's full SHA. Never repeat the plan's code in the structured output: builders and verifiers read the section from that commit.
 Aim for parallel waves: a depends_on edge means a task needs another's code, not just its order. If every task truly must follow the one before, say why in serial_reason [PL-15].`
 
-const specPrompt = (diags) => `You are writing the SPEC for issue ${ISSUE.id}. Write it to ${A.specPath} using the house template (templates/spec.md of the resolve-issue skill, or the exemplar in ${(P.docs && P.docs.index) || 'the docs index'}).
-Diagnoses (verbatim, ${diags.length} independent angle(s)). Where they disagree, read the code yourself and decide:
-${JSON.stringify(diags, null, 2)}
-
+const specPrompt = (diags) => `${preamble()}
+You are writing the SPEC for issue ${ISSUE.id}, using the house template (templates/spec.md of the resolve-issue skill, or the exemplar in ${(P.docs && P.docs.index) || 'the docs index'}).
 ${specRules()}
 Commit the spec file (explicit path).
-${preamble()}`
+Write it to ${A.specPath}.
+Diagnoses (${diags.length} independent angle(s), the fields you need; the full outputs are in the run journal). Where they disagree, read the code yourself and decide:
+${diagBrief(diags)}`
 
-const planPrompt = (spec) => `You are writing the PLAN for issue ${ISSUE.id}. Read the spec at ${spec.spec_path} first. Write the plan to ${A.planPath} (templates/plan.md format) and commit it.
-${PLAN_RULES}
-Spec summary: ${JSON.stringify(spec)}
-${preamble()}`
+const planPrompt = (spec) => `${preamble()}
+You are writing the PLAN for issue ${ISSUE.id} (templates/plan.md format).
+${planRules()}
+The spec summary below is authoritative. Read only the spec sections you need, by heading; never the whole file twice.
+Spec: ${spec.spec_path}. Write the plan to ${A.planPath} and commit it.
+Spec summary: ${JSON.stringify(spec)}`
 
-const specPlanPrompt = (diags) => `You are writing the SPEC and the PLAN for SMALL issue ${ISSUE.id}, in one pass.
-Diagnosis (verbatim). Read the code yourself wherever it is thin:
-${JSON.stringify(diags, null, 2)}
-
+const specPlanPrompt = (diags) => `${preamble()}
+You are writing the SPEC and the PLAN for ${SMALL ? 'SMALL' : 'small'} issue ${ISSUE.id}, in one pass.
+${specRules()}
+${planRules()}
 ${SPEC_IN_COMMIT
     ? 'Write NO spec file. The spec goes in the root-fix task\'s commit body: root cause and how it was confirmed, shared seam, the regression test and the interface it drives, out of scope, docs impact. Put that commit body in the task\'s commit step. Return spec_path=null.'
     : `Write the spec to ${A.specPath} (templates/spec.md format) and commit it.`}
 Write the plan to ${A.planPath} (templates/plan.md format) and commit it. Return the spec fields and the plan units together.
-${specRules()}
-${PLAN_RULES}
-${preamble()}`
+Diagnosis (the fields you need, compact). Read the code yourself wherever it is thin:
+${diagBrief(diags)}`
 
-const replanPrompt = (spec, plan, shape) => `You are RE-PLANNING issue ${ISSUE.id} [PL-15]. The plan at ${plan.plan_path} has ${shape.tasks} tasks that the scheduler would run in ${shape.waves} waves: fully serial.
-Rewrite it for parallelism: keep a depends_on edge only where a task needs another's code, and split shared files so independent tasks touch disjoint files. Update ${A.planPath} and commit it.
+const replanPrompt = (spec, plan, shape) => `${preamble()}
+You are RE-PLANNING issue ${ISSUE.id} [PL-15].
+${planRules()}
+Rewrite it for parallelism: keep a depends_on edge only where a task needs another's code, and split shared files so independent tasks touch disjoint files. Update ${A.planPath}, commit it, and return the new plan_sha and section pointers.
 If serial really is right, keep the tasks and give the real dependency in serial_reason.
+The plan at ${plan.plan_path} has ${shape.tasks} tasks that the scheduler would run in ${shape.waves} waves: fully serial.
 Current tasks: ${JSON.stringify(plan.tasks.map((t) => ({ id: t.id, title: t.title, files: t.files, depends_on: t.depends_on })))}
-${PLAN_RULES}
-Spec summary: ${JSON.stringify(spec)}
-${preamble()}`
+Spec summary: ${JSON.stringify(spec)}`
 
-const loadPlanPrompt = () => `You are RESUMING issue ${ISSUE.id} at the build stage, after a human reviewed the committed plan. Read the plan at ${A.planPath} and the spec (${SPEC_REF}) as committed on ${A.branch}.
-Return the spec fields and the plan's tasks as structured units, each task's section verbatim. Modify nothing.
+const loadPlanPrompt = () => `${preamble()}
+You are RESUMING issue ${ISSUE.id} at the build stage, after a human reviewed the committed plan. Modify nothing.
+Return the spec fields and the plan's tasks as structured units with POINTERS: each task's section heading and start_line/end_line in the committed plan file, and plan_sha = \`git log -1 --format=%H -- ${A.planPath}\` [CO-9].
 Copy root_cause, user_change and cause_class from the committed spec's own text (for a small issue, the root-fix commit body). Never return a placeholder such as "see the spec": the summary is rendered from these fields [OR-30].
-${preamble()}`
+Plan: ${A.planPath}. Spec: ${SPEC_REF}, as committed on ${A.branch}.`
 
-const fitPrompt = (spec, plan) => `Symptom check before build [PL-1]. Read the verbatim report at ${A.reportPath}, the spec (${spec.spec_path || SPEC_REF}) and the plan at ${plan.plan_path}.
-Question: does this plan fix the REPORTED symptom, or a NEIGHBOURING one? List the reported symptom (kind "reported") plus at least two real neighbouring symptoms on the same surface (kind "neighbour"), and give each a probability (sum to 1). Do not modify any file.
-${preamble()}`
+const fitPrompt = (spec, plan) => `${preamble()}
+Symptom check before build [PL-1]. Question: does this plan fix the REPORTED symptom, or a NEIGHBOURING one? List the reported symptom (kind "reported") plus at least two real neighbouring symptoms on the same surface (kind "neighbour"), and give each a probability (sum to 1). Do not modify any file.
+Read the verbatim report at ${A.reportPath}, the spec (${spec.spec_path || SPEC_REF}) and the plan at ${plan.plan_path}, by section.`
 
-const buildPrompt = (t, prefix) => `${prefix || ''}You are the BUILDER for task ${t.id} of issue ${ISSUE.id}: ${t.title}.
-Files you may touch (and nothing else): ${t.files.join(', ')}
+const buildPrompt = (t, prefix) => `${preamble()}
+You are a BUILDER for issue ${ISSUE.id}.
 Execute the plan's task exactly: run its tests, tick its checkboxes in ${A.planPath}, and commit the ticked plan file TOGETHER with your own files, by explicit path, in the task commit. Never leave ticks uncommitted [BD-21].
 If the plan's code does not compile against reality, fix it to match and REPORT the deviation. Report the commands you ran and their real output.
 Only do the task you are given; do not invent additional work. Do not add dependencies; if one seems necessary, stop and report.
-Run typecheck/build for what you touched, not the full browser suites. When you add a field, grep every write path and validator; when you add an export to a mocked module, update every mock of it.
-TASK (verbatim from the plan):
-${t.instructions}
-ACCEPTANCE: ${t.acceptance}
-${preamble()}`
+Write the shortest correct diff: reuse what already exists, add no abstraction, option or scaffolding the task does not need; the plan's code is the ceiling, not the floor [CO-9].
+Run ONLY the task's named tests and typecheck/build for what you touched, never the full browser suites. When you add a field, grep every write path and validator; when you add an export to a mocked module, update every mock of it.
+${prefix || ''}Your task: ${t.id} ${t.title}.
+Files you may touch (and nothing else): ${t.files.join(', ')}
+${taskRef(t)}`
 
 // The verifier gets the commits, the task and its acceptance, and the builder's declared deviations.
 // Never the builder's report: its claims anchor the verdict [VF-1].
-const verifyPrompt = (t, shas, deviations) => `You are an ADVERSARIAL VERIFIER for task ${t.id} of issue ${ISSUE.id}: ${t.title}.
+const verifyPrompt = (t, shas, deviations, prior) => `${preamble()}
+You are an ADVERSARIAL VERIFIER for one task of issue ${ISSUE.id}.
 You did not write this. Assume it is wrong until your own commands prove otherwise. Fix NOTHING. If unsure, fail.
-Authority order: mockup > spec (${SPEC_REF}) > plan (${A.planPath}). Commits to check: ${shas.join(' ') || '(none reported: find them with git log)'}.
-TASK (verbatim from the plan):
-${t.instructions}
-ACCEPTANCE: ${t.acceptance}
-Deviations from the plan the builder declared (claims to check, not facts):
-${list(deviations)}
+Authority order: mockup > spec (${SPEC_REF}) > plan (${A.planPath}). Read the task's section from the plan at its COMMIT (the command in TASK below), never from the working tree.
 Checklist (record every item in checks):
-1. Scope: \`git show --stat <sha>\` for each commit touches only: ${t.files.join(', ')} (plus its ticks in ${A.planPath}).
-2. The named tests exist AND pass when YOU run them. 3. Typecheck and lint are clean.
+1. Scope: \`git show --stat <sha>\` for each commit touches only the task's files (below) plus its ticks in ${A.planPath}. Then read \`git diff <sha>^! -- <file>\` per file.
+2. Run ONLY the task's named tests, and see each exist AND pass. 3. Typecheck and lint the touched packages. Never the full suites or e2e unless a named test is e2e: the gates stage owns those [CO-9].
 4. Each commit has the required trailers and issue tag. 5. No TODO/FIXME/"not implemented" in the diff. 6. The task's plan checkboxes are ticked IN A COMMIT. Ignore uncommitted plan ticks in the working tree; they are another task's, not a finding [BD-21].
 7. Law checks by grep (every numbered law; destructive DDL; new unique constraints; secrets; sensitive identifiers in fixtures, commits or docs).
 8. NEGATIVE CONTROL, one per ACCEPTANCE ROW (each criterion in ACCEPTANCE), recorded in negative_controls [VF-3]. Make a throwaway detached worktree at the last sha (outside ${A.worktree}), run a REAL dependency install there (${(P.commands && P.commands.install) || 'the frozen-lockfile install'}; never symlink dependency dirs, module mocks break)${P.commands && P.commands.post_install ? `, then ${joinCmd(P.commands.post_install)}` : ''}, and link only the env and secrets [IS-16].
@@ -595,7 +644,7 @@ Checklist (record every item in checks):
 10. Claims in docs and comments are true. 11. The feature is reachable from the UI. 12. Any gate is correct in both directions (no leak, full coverage).
 13. None of the build pitfalls in ${SKILL}/references/verification.md section 2 (stripped fields, orphaned triggers, cache-masked indicators, unhandled promise chains, route order, effect loops, silent not_configured, hardcoded formats, and the rest).
 14. Each test drives the interface it names. A test that imports internals (private helpers, module internals no caller uses) is a test-gap finding.
-15. Privacy and security behaviour [SP-18]: does the diff change what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs)? Decided rows from the spec: ${JSON.stringify(decidedRows())}. Run decisions (human or AUTO): ${JSON.stringify(DECISIONS)}. Any such change those rows do not cover goes in privacy_security_change, in one sentence; else null.
+15. Privacy and security behaviour [SP-18]: does the diff change what is on screen or in the DOM when the app is locked or logged out, or how long data lives (caches, storage, retention, logs)? Any such change the decided rows and run decisions (below) do not cover goes in privacy_security_change, in one sentence; else null.
 A finding that is true only until a later stage runs ("acceptance pending", "not yet committed", "gates not run") names that stage in until_stage [VF-32].
 Kill any server you start. code_defect=true ONLY for real logic defects, not bookkeeping. unfinished_work must name files and symbols precisely.
 Put everything else you noticed in non_blocking_findings, each with a severity (defect | test-gap | doc-copy | follow-up | bookkeeping) and the file it is about. Tag honestly: a reachable wrong behaviour (a page stuck loading, a raw 500, misleading copy) is a defect or doc-copy even if it is outside this task [VF-31, VF-11].
@@ -603,59 +652,86 @@ Wrong persisted state (a stale field left behind, a record that should have been
 A defect in this task's own files sends the task back for repair even if everything else passes.
 unfinished_work is for THIS task's files. A problem in a file outside the task's list (a sibling bug on another page) goes in non_blocking_findings as a follow-up and does not fail the task [VF-34].
 When failing, name failing_test and failure_cause. Set behaviour_choice=true only when the failure hinges on an undecided product behaviour (what SHOULD happen), not a code fault [VF-5].
-${preamble()}`
+${DIFF_SCOPE ? `DIFF SCOPE (profile verify.diff_scope) [CO-9]: read \`git diff --stat\` of the commits, the task files' own diffs, and the callers of every export they change (\`rg -l '<export>'\`); not the rest of the branch diff. Cross-cutting code (auth, sessions, crypto, privacy or sensitive data, logging, feature flags) is exempt: there, read the callers' code too.
+` : ''}${prior ? `DELTA RE-VERIFY (profile verify.delta_reverify) [CO-9]: you are still a fresh, adversarial verifier and the builder's report is still withheld. A previous verifier rejected this task at ${prior.head}; a repair followed.
+Run \`git diff --name-only ${prior.head}..HEAD\`. Re-run in full: items 1, 4 and 7, every one of the task's named tests, and every check that failed before. Negative controls: re-run every row that was not red, and every red row whose guarded file is in that diff; carry a red row forward (result red, detail "carried: unchanged since ${prior.head}") only when its guarded file is not in it. Do every other item as usual.
+Checks that failed before: ${JSON.stringify(prior.failed)}
+Negative controls before: ${JSON.stringify(prior.controls)}
+` : ''}Decided privacy rows from the spec: ${JSON.stringify(decidedRows())}. Run decisions (human or AUTO): ${JSON.stringify(DECISIONS)}.
+Your task: ${t.id} ${t.title}. Its files: ${t.files.join(', ')}
+Commits to check: ${shas.join(' ') || '(none reported: find them with git log)'}.
+Deviations from the plan the builder declared (claims to check, not facts):
+${list(deviations)}
+${taskRef(t)}`
 
-const viewPrompt = (round, prior) => `You are the VIEW agent (the visual lens) for issue ${ISSUE.id}, round ${round}. You BUILD NOTHING and fix nothing: you look and report.
-The spec (${SPEC_REF}) says this change is user-visible. Targets (screen / state):
-${list(result.spec.view_targets)}
-For each screen also capture the states the spec names among locked, loading, empty and error.
-1. BEFORE: make a throwaway detached worktree at ${BASE}, OUTSIDE ${A.worktree}. Do a real install (${(P.commands && P.commands.install) || 'the frozen-lockfile install'})${P.commands && P.commands.post_install ? ` then ${joinCmd(P.commands.post_install)}` : ''}, link only the env and secrets [IS-16]. Start the app on this run's ports with TEST DATA ONLY (synthetic accounts and records; never production, staging or a real user's data). Screenshot every target at 390x844 and at 1440x900 [VF-23]. Stop its servers by process group, then remove the worktree.
-2. AFTER: the same targets, viewports and data in ${A.worktree} at HEAD.
-Screenshots go in ${SHOT_DIR}/round-${round}/ as <screen>-<state>-<viewport>-<before|after>.png. That directory is outside the worktree; never copy a screenshot into it or commit one [IS-19].
-3. Judge the AFTER shots against the design docs (${[].concat((P.docs && P.docs.design) || []).join(', ') || 'none in the profile'}) and ${SKILL}/references/packs/ux.md, and compare them with BEFORE.
+// the before shots of round 1 are reused later: the base does not change between rounds [CO-9]
+const viewCapture = (round) => `For each screen also capture the states the spec names among locked, loading, empty and error.
+${round > 1
+    ? `1. BEFORE: REUSE the round-1 before shots in ${SHOT_DIR}/round-1/ (*-before.png). The base has not changed; do not rebuild the base worktree.`
+    : `1. BEFORE: make a throwaway detached worktree at ${BASE}, OUTSIDE ${A.worktree}. Do a real install (${(P.commands && P.commands.install) || 'the frozen-lockfile install'})${P.commands && P.commands.post_install ? ` then ${joinCmd(P.commands.post_install)}` : ''}, link only the env and secrets [IS-16]. Start the app on this run's ports with TEST DATA ONLY (synthetic accounts and records; never production, staging or a real user's data). Screenshot every target at 390x844 and at 1440x900 [VF-23]. Stop its servers by process group, then remove the worktree.`}
+2. AFTER: the same targets, viewports and data in ${A.worktree} at HEAD, at 390x844 and at 1440x900.
+Screenshots go in ${SHOT_DIR}/round-${round}/ as <screen>-<state>-<viewport>-<before|after>.png. That directory is outside the worktree; never copy a screenshot into it or commit one [IS-19].`
+const viewJudge = (round, prior) => `3. Judge the AFTER shots against the design docs (${[].concat((P.docs && P.docs.design) || []).join(', ') || 'none in the profile'}) and ${SKILL}/references/packs/ux.md, and compare them with BEFORE.
 4. Each finding: cause "branch" when the BEFORE shot does not show it and AFTER does (this branch caused it), "pre-existing" when BEFORE shows it too; a severity (defect = a visual defect a user would hit: overlap, clipping, unreadable text, a blank or stuck state, a control out of reach); a kind; the screenshot paths; the file if you can name it.
-${prior && prior.length ? `Round ${round - 1} found these branch defects and a repair was made. Check that each is gone:\n${list(prior.map((f) => f.finding))}\n` : ''}Report processes_left from ps after cleanup; it must be 0.
-${preamble()}`
+${prior && prior.length ? `Round ${round - 1} found these branch defects and a repair was made. Check that each is gone:\n${list(prior.map((f) => f.finding))}\n` : ''}`
+const viewTargets = () => `The spec (${SPEC_REF}) says this change is user-visible. Targets (screen / state):
+${list(result.spec.view_targets)}`
 
-const viewRepairPrompt = (defects, files, decision) => `You are REPAIRING visual defects that this branch caused in issue ${ISSUE.id}. An independent VIEW agent compared before and after screenshots.${decision ? ` Decided (AUTO, run decisions): ${decision}. Apply exactly this.` : ''} Fix EXACTLY these:
-${defects.map((f) => `- ${f.finding} (screenshots: ${(f.screenshots || []).join(', ') || 'none'})`).join('\n')}
-Files you may touch: ${files.join(', ')}. Commit the fix (explicit paths, trailers). Do not weaken any test. Report commands and real output.
-${preamble()}`
+const viewPrompt = (round, prior) => `${preamble()}
+You are the VIEW agent (the visual lens) for issue ${ISSUE.id}. You BUILD NOTHING and fix nothing: you look and report.
+Report processes_left from ps after cleanup; it must be 0.
+This is round ${round}. ${viewTargets()}
+${viewCapture(round)}
+${viewJudge(round, prior)}`
 
-const harvestPrompt = (items) => `You are the HARVEST agent for issue ${ISSUE.id}. You build nothing and file nothing: you DRAFT side issues. The main loop re-checks each draft against the code and files it.
-Findings and follow-ups from every stage of this run (stale ones already dropped), JSON:
-${JSON.stringify(items).slice(0, 30000)}
-Open issues on the tracker (dedupe against these):
-${list(OPEN_ISSUES.map((i) => `#${i.number} ${i.title}${(i.labels || []).length ? ` [${i.labels.join(', ')}]` : ''}`))}
+// view.split: a cheaper agent captures, a strong one judges only the images [CO-9]
+const viewCapturePrompt = (round) => `${preamble()}
+You are the VIEW CAPTURE agent for issue ${ISSUE.id}. You BUILD NOTHING, fix nothing and judge nothing: you take screenshots and return their paths.
+Report processes_left from ps after cleanup; it must be 0.
+This is round ${round}. ${viewTargets()}
+${viewCapture(round)}`
+
+const viewJudgePrompt = (round, prior, cap) => `${preamble()}
+You are the VIEW JUDGE (the visual lens) for issue ${ISSUE.id}. You BUILD NOTHING, fix nothing and start nothing: no servers, no worktrees. Read only the screenshots below, the design docs and the ux pack. Return processes_left 0.
+This is round ${round}. ${viewTargets()}
+${viewJudge(round, prior)}Screenshots (JSON, from the capture agent): ${JSON.stringify(cap.screenshots || [])}`
+
+const viewRepairPrompt = (defects, files, decision) => `${preamble()}
+You are REPAIRING visual defects that this branch caused in issue ${ISSUE.id}. An independent VIEW agent compared before and after screenshots. Commit the fix (explicit paths, trailers). Do not weaken any test. Report commands and real output.${decision ? `\nDecided (AUTO, run decisions): ${decision}. Apply exactly this.` : ''}
+Files you may touch: ${files.join(', ')}. Fix EXACTLY these:
+${defects.map((f) => `- ${f.finding} (screenshots: ${(f.screenshots || []).join(', ') || 'none'})`).join('\n')}`
+
+const harvestPrompt = (items) => `${preamble()}
+You are the HARVEST agent for issue ${ISSUE.id}. You build nothing and file nothing: you DRAFT side issues. The main loop re-checks each draft against the code and files it.
 Rules [OR-27]:
-1. Re-read each item against the code at HEAD (git diff ${BASE}...HEAD shows this branch). A defect in THIS branch's code is never a side issue: put it in dropped with reason "branch defect: not repaired" so the audit sees it.
+1. Re-read each item against the code at HEAD (git diff --stat ${BASE}...HEAD shows this branch). A defect in THIS branch's code is never a side issue: put it in dropped with reason "branch defect: not repaired" so the audit sees it.
    A SECURITY or PRIVACY finding that touches any file in this branch's diff is a branch defect, even if the hole looks older than the branch: never a side issue. If you draft one anyway, the run routes it back to repair [OR-27].
 2. Drop anything ${A.worktree}/.out-of-scope/ (if it exists) or a closed wontfix decision rejects, anything no longer true, and bookkeeping. Every drop goes in dropped with its reason.
 3. One draft per distinct problem. Dedupe by CONCEPT, not only by title: compare each draft's root cause with every open issue's title and labels; the same problem in other words is a duplicate. If an open issue already covers it, set duplicate_of to its number and write the body as a COMMENT adding only the new evidence [OR-27].
 4. severity: privacy, security, data-loss, broken-flow (a user cannot finish a task) or wrong-state (wrong persisted data) for serious problems; everything else is minor. kind: ${KINDS.join(' | ')}.
 5. evidence: file:line at HEAD or a screenshot path from this run, at least one. Claim only what the evidence shows.
 6. The body starts "Found while resolving #${ISSUE.id}." and holds no names, record numbers, birth dates or customer data [PS-1, PS-2]. Never attach or reference a screenshot of real user data.
-${preamble()}`
+Open issues on the tracker (dedupe against these):
+${list(OPEN_ISSUES.map((i) => `#${i.number} ${i.title}${(i.labels || []).length ? ` [${i.labels.join(', ')}]` : ''}`))}
+Findings and follow-ups from every stage of this run (stale ones already dropped), JSON:
+${JSON.stringify(items).slice(0, 30000)}`
 
-const repairPrompt = (t, v) => `You are REPAIRING task ${t.id} of issue ${ISSUE.id}: ${t.title}. A previous attempt was rejected by an independent verifier. Fix EXACTLY this:
+const repairPrompt = (t, v) => `${preamble()}
+You are REPAIRING a task of issue ${ISSUE.id}. A previous attempt was rejected by an independent verifier. Commit the fix (explicit paths, trailers). Do not weaken any test. Report commands and real output.
+Task: ${t.id} ${t.title}. Files you may touch: ${t.files.join(', ')}.
+${taskRef(t)}
+Fix EXACTLY this:
 ${v.unfinished_work}
-Failed checks: ${JSON.stringify((v.checks || []).filter((c) => !c.ok))}
-Files you may touch: ${t.files.join(', ')}. Commit the fix (explicit paths, trailers). Do not weaken any test. Report commands and real output.
-Original task (verbatim):
-${t.instructions}
-${preamble()}`
+Failed checks: ${JSON.stringify((v.checks || []).filter((c) => !c.ok))}`
 
-const completePrompt = (tasks) => `You are a COMPLETENESS CHECKER for issue ${ISSUE.id}. Cross-check the plan's units against the actual tree on ${A.branch} (git log ${BASE}..HEAD, plus the files themselves).
-Units: ${JSON.stringify(tasks.map((t) => ({ id: t.id, title: t.title, files: t.files, acceptance: t.acceptance })))}
+const completePrompt = (tasks) => `${preamble()}
+You are a COMPLETENESS CHECKER for issue ${ISSUE.id}. Cross-check the plan's units against the actual tree on ${A.branch} (git log --stat ${BASE}..HEAD, plus the files themselves by range).
 Return the ids of units with no real implementation (missing or stubbed). Modify nothing.
-${preamble()}`
+Units: ${JSON.stringify(tasks.map((t) => ({ id: t.id, title: t.title, files: t.files, acceptance: t.acceptance })))}`
 
-const gatesPrompt = () => `You are the GATES agent for issue ${ISSUE.id}. First record \`git rev-parse HEAD\` as head_before.
-Run EXACTLY these commands, in this order, and no others:
-${list(gateCmds().length ? gateCmds() : ['(no gate commands in the profile: report all_green=false and stop)'])}
-E2E in this run: ${A.e2e ? 'YES, as listed above; run it in the foreground with a long timeout' : 'NO. Report e2e as skipped (it runs from the main checkout at merge). Never report skipped as passed'}.
-For each gate: save the FULL output to a log file, grep ALL of it for "failed" and "flaky", and record the exit code separately from your own grep's exit code.
-Known-flaky SET: ${JSON.stringify(P.known_flaky || [])}. A failure inside this set is non-blocking ONLY if it matches. A new failure in the touched area blocks.
+const gatesPrompt = () => `${preamble()}
+You are the GATES agent for issue ${ISSUE.id}. First record \`git rev-parse HEAD\` as head_before.
+For each gate: write the FULL output to a log file under ${LOG_DIR}/, grep ALL of it for "failed" and "flaky", record the exit code separately from your own grep's exit code, and bring back only the failing set and the summary line. Never print a whole log [CO-9].
 You may fix ONLY a failure you can tie to a file this branch changed (\`git diff --name-only ${BASE}...HEAD\`). Everything else goes in remaining_failures, unchanged.
 Every fix is its own commit, listed in commits; a fresh verifier will review each one. Do NOT run the CI-only checks from the shared context; list them in ci_only [TG-34].
 To triage a red spec, run it alone and in the full run; require green twice in a row.
@@ -664,45 +740,46 @@ Live-API suites (real third-party calls, billing, rate limits) are not gates: ru
 A gate that cannot load or start (module not found, missing codegen, install error) is an environment problem, never a red result: run install${P.commands && P.commands.post_install ? ` and ${joinCmd(P.commands.post_install)}` : ''}, then rerun [IS-16].
 Change a TEST only when it asserts behaviour the app deliberately no longer has, and cite the commit. Never skip, retry-wrap, raise timeouts, loosen or weaken anything. If that seems necessary, stop and report.
 Kill every server you start and prove zero listeners on the run's ports at the end.
-${preamble()}`
+Known-flaky SET: ${JSON.stringify(P.known_flaky || [])}. A failure inside this set is non-blocking ONLY if it matches. A new failure in the touched area blocks.
+E2E in this run: ${A.e2e ? 'YES, as listed below; run it in the foreground with a long timeout' : 'NO. Report e2e as skipped (it runs from the main checkout at merge). Never report skipped as passed'}.
+Run EXACTLY these commands, in this order, and no others:
+${list(gateCmds().length ? gateCmds() : ['(no gate commands in the profile: report all_green=false and stop)'])}`
 
-const gatesVerifyPrompt = (g) => `You are an ADVERSARIAL VERIFIER of the commits the GATES agent made for issue ${ISSUE.id}. Nobody else reviews them. Assume they are wrong until your own commands prove otherwise. Fix NOTHING. If unsure, fail.
+const gatesVerifyPrompt = (g) => `${preamble()}
+You are an ADVERSARIAL VERIFIER of the commits the GATES agent made for issue ${ISSUE.id}. Nobody else reviews them. Assume they are wrong until your own commands prove otherwise. Fix NOTHING. If unsure, fail.
+code_defect=true ONLY for real logic defects. Tag every non-blocking finding with a severity and file [VF-31].
 The gates agent says it started at ${g.head_before || '(not reported: fail check 1)'} and made: ${(g.commits || []).join(' ')}. It says it fixed:
 ${list(g.failures_fixed)}
 1. \`git log --format='%H %s' ${g.head_before || '<head_before>'}..HEAD\` lists exactly those commits, nothing more.
-2. Read \`git diff ${g.head_before || '<head_before>'}..HEAD\`. Each hunk fixes a named gate failure, and nothing else.
+2. Read \`git diff --stat ${g.head_before || '<head_before>'}..HEAD\`, then each file's diff. Each hunk fixes a named gate failure, and nothing else.
 3. Every touched file is one this branch already changed (\`git diff --name-only ${BASE}...${g.head_before || '<head_before>'}\`) or a test that exercises one of them.
 4. Nothing was weakened: no skip/only, retry wrapper, raised timeout, loosened or deleted assertion, deleted test. A test may change only where it asserts behaviour the app deliberately no longer has, citing the commit.
-5. Trailers present; laws hold by grep; no TODO/FIXME. 6. Re-run the gate commands those commits were meant to fix, and see them pass.
-code_defect=true ONLY for real logic defects. Tag every non-blocking finding with a severity and file [VF-31].
-${preamble()}`
+5. Trailers present; laws hold by grep; no TODO/FIXME. 6. Re-run the gate commands those commits were meant to fix, and see them pass.`
 
-const docsPrompt = (gates) => `You are the DOCS agent for issue ${ISSUE.id}. The spec says docs are affected: ${result.spec ? result.spec.docs_impact : '(see spec)'}. Check that against this change (git diff ${BASE}...HEAD).
+const docsPrompt = (gates) => `${preamble()}
+You are the DOCS agent for issue ${ISSUE.id}. Check the docs impact against this change (git diff --stat ${BASE}...HEAD, then per file).
 Update the user docs where behaviour changed (content, not just stamps; plain language; accurate privacy claims), the developer docs for the changed code, the glossary only if a term was resolved,
 and the changelog under "${(P.docs && P.docs.unreleased_heading) || '## Unreleased'}" in ${(P.docs && P.docs.changelog) || 'CHANGELOG.md'} (never the version file, never a released section).
 Link the spec and plan from ${(P.docs && P.docs.index) || 'the docs index'}. Add an ADR only if the decision is hard to reverse, surprising and a real trade-off, grounded in cited evidence, with the rankings and any overrules.
 Never document behaviour that cannot fire. Check every sentence against the code. Run the doc checks. Commit explicit paths.
 If on reading the diff nothing user- or developer-facing changed after all: docs_impact="none" with a real justification.
-Gates result: ${JSON.stringify(gates).slice(0, 8000)}
-${preamble()}`
+The spec says docs are affected: ${result.spec ? result.spec.docs_impact : '(see spec)'}.
+Gates result: ${JSON.stringify(gates).slice(0, 8000)}`
 
-const docsVerifyPrompt = (d) => `You are an ADVERSARIAL VERIFIER of documentation for issue ${ISSUE.id}. For every claim in these changed docs, find the code that makes it true, or fail it.
+const docsVerifyPrompt = (d) => `${preamble()}
+You are an ADVERSARIAL VERIFIER of documentation for issue ${ISSUE.id}. For every claim in these changed docs, find the code that makes it true, or fail it.
 Check that the changelog entry is under the Unreleased heading and claims only what shipped. Fix nothing.
 Tag every non-blocking finding with a severity (defect | test-gap | doc-copy | follow-up | bookkeeping) [VF-31].
-Docs result: ${JSON.stringify(d)}
-${preamble()}`
+Docs result: ${JSON.stringify(d)}`
 
-const docsRepairPrompt = (v) => `You are REPAIRING the docs for issue ${ISSUE.id}. An independent verifier rejected them. Fix EXACTLY this, by changing the docs to match the code (never the code to match the docs):
-${v.unfinished_work}
-Failed checks: ${JSON.stringify((v.checks || []).filter((c) => !c.ok))}
+const docsRepairPrompt = (v) => `${preamble()}
+You are REPAIRING the docs for issue ${ISSUE.id}. An independent verifier rejected them. Fix EXACTLY this, by changing the docs to match the code (never the code to match the docs).
 Run the doc checks. Commit explicit paths, with trailers. Report the files and commits.
-${preamble()}`
+${v.unfinished_work}
+Failed checks: ${JSON.stringify((v.checks || []).filter((c) => !c.ok))}`
 
-const decidePrompt = (point, question, context) => `You are the DECIDE agent for issue ${ISSUE.id}. The run reached a decision point at ${point}. You change NOTHING in the repo.
-Question (verbatim):
-${question}
-Context (JSON): ${JSON.stringify(context).slice(0, 8000)}
-Decisions already taken in this run (by index): ${JSON.stringify(DECISIONS)}
+const decidePrompt = (point, question, context) => `${preamble()}
+You are the DECIDE agent for issue ${ISSUE.id}. You change NOTHING in the repo.
 ADRs: ${(P.docs && P.docs.adr_dir) || 'n/a'}. Read the ones this question touches; a locked ADR or decision counts.
 1. Turn the question into 2 to 4 concrete, mutually exclusive options (what changes, what survives, what is lost). recommendation is the exact text of one option; give the reason.
 2. Rank: run \`${(P.ranker && P.ranker.cmd) || '(no ranker)'}\` with JSON on stdin {"context": "...", "question": "...", "options": [<the option texts>]}. Copy its output into ranking.raw VERBATIM, and fill top (exact option text), p_top and p_second from it. Run it ONCE; never rerun it for a different answer.
@@ -711,11 +788,16 @@ ${list(CRITICAL)}
 4. weakens_protection=true when the recommended option leaves less privacy or security protection than the code at ${BASE} has (more shown while locked, data kept longer, more sent to a third party, wider access).
 5. Privacy rows [SP-18]: widens_exposure=true when the recommendation exposes more data (or touches another account's data) than the base or any decision; new_data_lifetime=true when it keeps or deletes data on a schedule no decision covers. When the recommendation only NARROWS exposure and stays inside a HUMAN decision above (not an AUTO one), set narrows_decision to that decision's index: such a row is auto-decidable even when the decision it narrows was critical.
 Report honestly: the run, not you, decides whether this is settled without the human.
-${preamble()}`
+The run reached a decision point at ${point}.
+Decisions already taken in this run (by index): ${JSON.stringify(DECISIONS)}
+Context (JSON): ${JSON.stringify(context).slice(0, 8000)}
+Question (verbatim):
+${question}`
 
 // ---------- per-stage metrics [CO-2] ----------
 
-// Token deltas per phase from budget.spent(); wall-clock time is the main loop's job.
+// OUTPUT-token deltas per phase from budget.spent() (output is ~8% of real cost; scripts/run-cost.py computes the cost
+// from the transcripts, and the main loop logs it as metrics.cost) [CO-9]. Wall-clock time is the main loop's job.
 const STAGES = []
 let cur = null
 const spentNow = () => (typeof budget !== 'undefined' && budget && typeof budget.spent === 'function' ? budget.spent() : null)
@@ -809,6 +891,7 @@ async function runTask(t, prefix) {
     if (r && r.deviations) deviations.push(...r.deviations)
   }
   let v = null
+  let prior = null // delta re-verify only: the last real rejection [CO-9]
   for (let round = 0; round <= REPAIR_ROUNDS; round++) {
     if (bad.length) {
       // a report without real SHAs is a builder failure: straight to repair, no verifier [BD-22]
@@ -819,8 +902,9 @@ async function runTask(t, prefix) {
       }
       attempts.push({ round, passed: false, code_defect: false, bad_commits: bad, summary: v.summary, non_blocking: [] })
     } else {
-      v = await call(verifyPrompt(t, shas, deviations), opts('verify', { label: `verify ${t.id} #${round + 1}`, phase: 'Verify', schema: VERDICT }))
-      if (!v) v = await call(verifyPrompt(t, shas, deviations), opts('verify', { label: `re-verify ${t.id} #${round + 1}`, phase: 'Verify', schema: VERDICT })) // a null verdict is never a pass
+      const pr = DELTA_REVERIFY ? prior : null
+      v = await call(verifyPrompt(t, shas, deviations, pr), opts('verify', { label: `verify ${t.id} #${round + 1}`, phase: 'Verify', schema: VERDICT }))
+      if (!v) v = await call(verifyPrompt(t, shas, deviations, pr), opts('verify', { label: `re-verify ${t.id} #${round + 1}`, phase: 'Verify', schema: VERDICT })) // a null verdict is never a pass
       if (!v) {
         attempts.push({ round, verdict: null })
         return { id: t.id, title: t.title, status: 'failed', reason: 'verifier died twice', commits: shas, attempts, build: b }
@@ -867,6 +951,7 @@ async function runTask(t, prefix) {
       const sig = v.passed || !v.failing_test ? null : `${norm(v.failing_test)}|${norm(v.failure_cause)}`
       attempts.push({ round, passed: v.passed, code_defect: v.code_defect, summary: v.summary, promoted_defects: own.length, sig, behaviour_choice: !!v.behaviour_choice, non_blocking: nb.filter((f) => !own.includes(f)) })
       if (v.passed) return { id: t.id, title: t.title, status: 'verified', commits: shas, attempts, build: b, repairs: round }
+      prior = { head: shas[shas.length - 1] || 'HEAD', failed: (v.checks || []).filter((c) => !c.ok).map((c) => c.check), controls: v.negative_controls || [] }
       // same test, same cause after 2 repairs, and the cause is a behaviour choice: a human decides, no third repair [VF-5]
       const prev = attempts[attempts.length - 2]
       if (round >= SAME_CAUSE_ROUNDS && sig && v.behaviour_choice && prev && prev.sig === sig) {
@@ -1048,6 +1133,7 @@ function metrics(r) {
     auto_decisions: (r.auto_decisions || []).length, // [SP-20]
     superseded_findings: mergeFindings(r).superseded, // [VF-32]
     agents: STAGES.reduce((n, s) => n + s.agents, 0),
+    spent_unit: 'output_tokens', // stages[].spent counts output tokens only, never the cost [CO-9]
     stages: STAGES,
   }
 }
@@ -1115,7 +1201,7 @@ function insights(c) {
     .concat(c.decision_required ? [`decision stop at ${c.stage || 'build'}`] : [])
   return [
     `Cause class: ${c.cause_class || 'unclassified'}${c.shared_seam ? `, at ${c.shared_seam}` : ''}`,
-    `Effort: ${top ? `most in ${top.stage} (${top.spent} spent)` : 'stage spend not measured'}; repairs ${m.repairs}; verifier rejections ${m.verifier_rejections}`,
+    `Effort: ${top ? `most output in ${top.stage} (${top.spent} output tokens)` : 'stage spend not measured'}; repairs ${m.repairs}; verifier rejections ${m.verifier_rejections}`,
     c.auto_decisions.length ? `Auto-decisions: ${c.auto_decisions.length} (top p ${c.auto_decisions.map((x) => x.p_top).join(', ')})` : null,
     watch.length ? `Watch: ${watch.join('; ')}` : null,
     Object.keys(kinds).length ? `Side issues by kind: ${Object.entries(kinds).map(([k, n]) => `${k} ${n}`).join(', ')}` : null,
@@ -1193,17 +1279,25 @@ function finish(r) {
 
 const result = { issue: ISSUE, size: SIZE, status: 'running', diagnoses: [], spec: null, plan: null, symptom_check: null, tasks: [], gates: null, docs: null, auto_decisions: [] }
 const splitSpecPlan = (sp) => {
-  const plan = { plan_path: sp.plan_path, tasks: sp.tasks }
+  const plan = { plan_path: sp.plan_path, plan_sha: sp.plan_sha, tasks: sp.tasks }
   const spec = Object.assign({}, sp)
-  delete spec.plan_path; delete spec.tasks
+  delete spec.plan_path; delete spec.plan_sha; delete spec.tasks
   return { spec, plan }
+}
+// builders and verifiers read their section at plan_sha, so a plan without a real SHA and line ranges cannot be built [CO-9]
+function badPlan(p) {
+  if (!SHA.test(String(p.plan_sha || ''))) return `plan_sha is not a commit SHA: ${JSON.stringify(p.plan_sha || null)}`
+  const t = (p.tasks || []).find((x) => !x.section || !(x.section.start_line > 0) || !(x.section.end_line >= x.section.start_line))
+  return t ? `task ${t.id} has no section line range in the plan` : null
 }
 
 if (A.resumeFrom === 'build') {
   stage('Plan')
-  const sp = await call(loadPlanPrompt(), opts('plan', { label: 'load plan', schema: SPECPLAN }))
+  // the stopped run's spec fields and plan units (from its journal), when the main loop passes them: no agent [CO-9]
+  const sp = A.resumePlan || await call(loadPlanPrompt(), opts('plan', { label: 'load plan', schema: SPECPLAN }))
   if (!sp || !(sp.tasks || []).length) return finish(Object.assign(result, { status: 'failed', stage: 'plan', reason: sp ? 'committed plan has no tasks' : 'agent died' }))
   Object.assign(result, splitSpecPlan(sp))
+  if (badPlan(result.plan)) return finish(Object.assign(result, { status: 'failed', stage: 'plan', reason: badPlan(result.plan) }))
 } else {
   stage('Diagnose')
   const angles = SMALL
@@ -1222,12 +1316,14 @@ if (A.resumeFrom === 'build') {
     if (!d.auto) return finish(Object.assign(result, { status: 'decision_required', stage: 'diagnose', decision_required: d.text, decision: d.detail || null })) // [SP-11]
   }
   if (A.stopAfter === 'diagnose') return finish(Object.assign(result, { status: 'stopped', stage: 'diagnose' }))
+  // profile.spec_plan_merged_upto: one spec+plan agent when every diagnosis expects that few tasks [CO-9]
+  if (!SMALL && MERGE_UPTO > 0) MERGED = Math.max(...result.diagnoses.map((d) => (Number.isInteger(d.expected_tasks) && d.expected_tasks > 0 ? d.expected_tasks : Infinity))) <= MERGE_UPTO
 
   stage('Spec')
   let specRuns = 0
   const writeSpec = async () => {
     const sfx = specRuns++ ? ` #${specRuns}` : ''
-    if (SMALL) {
+    if (MERGED) {
       const sp = await call(specPlanPrompt(result.diagnoses), opts('spec', { label: 'spec plan' + sfx, schema: SPECPLAN }))
       if (sp) Object.assign(result, splitSpecPlan(sp))
       return !!sp
@@ -1266,14 +1362,15 @@ if (A.resumeFrom === 'build') {
   if (!result.spec.mechanism_explains_reported_data) log('Spec: no diagnosed mechanism fully explains the reported data. Proceeding with a fix that is correct regardless, plus evidence capture [SP-3].')
 
   stage('Plan')
-  if (!SMALL) result.plan = await call(planPrompt(result.spec), opts('plan', { label: 'plan', schema: PLAN }))
+  if (!MERGED) result.plan = await call(planPrompt(result.spec), opts('plan', { label: 'plan', schema: PLAN }))
   if (!result.plan || !(result.plan.tasks || []).length) return finish(Object.assign(result, { status: 'failed', stage: 'plan', reason: result.plan ? 'plan returned no tasks' : 'agent died' }))
+  if (badPlan(result.plan)) return finish(Object.assign(result, { status: 'failed', stage: 'plan', reason: badPlan(result.plan) }))
   // the plan reports its wave count; a fully serial medium plan gets one re-plan [PL-15]
   if (!SMALL) {
     let shape = planShape(result.plan.tasks)
     if (shape.serial && !result.plan.serial_reason) {
       const re = await call(replanPrompt(result.spec, result.plan, shape), opts('plan', { label: 'replan', schema: PLAN }))
-      if (re && (re.tasks || []).length) result.plan = re
+      if (re && (re.tasks || []).length && !badPlan(re)) result.plan = re
       shape = Object.assign(planShape(result.plan.tasks), { replanned: true })
     }
     result.plan_waves = Object.assign(shape, { serial_reason: result.plan.serial_reason || null })
@@ -1322,7 +1419,7 @@ for (const t of remaining) byId[t.id] = { id: t.id, title: t.title, status: 'not
 // completeness: plan units vs tree [VF-13]; dispatch a completion agent for exactly the missing ones [OR-10].
 // One task has its own verifier looking at exactly that unit, so the cross-check adds nothing there.
 if (tasks.length > 1) {
-  const comp = await call(completePrompt(tasks), opts('verify', { label: 'completeness', phase: 'Verify', schema: COMPLETE }))
+  const comp = await call(completePrompt(tasks), opts('completeness', { label: 'completeness', phase: 'Verify', schema: COMPLETE }))
   const missing = comp ? comp.missing.filter((id) => ids.has(id) && byId[id] && byId[id].status === 'verified') : []
   if (missing.length) {
     log(`Completeness: ${missing.join(', ')} verified but missing from the tree. Dispatching completion.`)
@@ -1336,16 +1433,24 @@ if (tasks.length > 1) {
 result.tasks = tasks.map((t) => byId[t.id])
 
 // VIEW lens: only for user-visible changes. A defect this branch caused gets ONE repair, then a human decides [VF-23]
+// view.split: a capture agent (build tier) takes the shots, a judge (verify tier) reads only the images [CO-9]
+async function runView(round, prior) {
+  if (!VIEW_SPLIT) return call(viewPrompt(round, prior), opts('verify', { label: `view #${round}`, phase: 'View', schema: VIEW }))
+  const cap = await call(viewCapturePrompt(round), opts('view_capture', { label: `view capture #${round}`, phase: 'View', schema: VIEW_CAPTURE }))
+  if (!cap) return null
+  const j = await call(viewJudgePrompt(round, prior, cap), opts('verify', { label: `view #${round}`, phase: 'View', schema: VIEW }))
+  return j && Object.assign(j, { screenshots: cap.screenshots || [], processes_left: cap.processes_left }) // the capture agent owns the processes
+}
 const branchDefects = (v) => ((v && v.findings) || []).filter((f) => f && f.cause === 'branch' && f.severity === 'defect')
 if (result.spec.user_visible) {
   stage('View')
-  result.view = await call(viewPrompt(1), opts('verify', { label: 'view #1', phase: 'View', schema: VIEW }))
+  result.view = await runView(1)
   let bd = branchDefects(result.view)
   if (bd.length) {
     const hit = tasks.filter((t) => bd.some((f) => touchesTask(f, t)))
     const files = [...new Set([].concat(...(hit.length ? hit : tasks).map((t) => t.files || [])))]
     result.view_repair = await call(viewRepairPrompt(bd, files), opts('repair', { label: 'repair view #1', phase: 'View', schema: BUILD }))
-    result.view = await call(viewPrompt(2, bd), opts('verify', { label: 'view #2', phase: 'View', schema: VIEW }))
+    result.view = await runView(2, bd)
     bd = branchDefects(result.view)
     if (bd.length) {
       const q = 'Visual defects this branch caused remain after one repair:\n' + bd.map((f) => `- ${f.finding} (${(f.screenshots || []).join(', ')})`).join('\n')
@@ -1353,7 +1458,7 @@ if (result.spec.user_visible) {
       if (d.auto) {
         // one more repair with the decided behaviour, then one last look; still there, a human decides [VF-23, SP-20]
         result.view_repair2 = await call(viewRepairPrompt(bd, files, d.choice), opts('repair', { label: 'repair view #2', phase: 'View', schema: BUILD }))
-        result.view = await call(viewPrompt(3, bd), opts('verify', { label: 'view #3', phase: 'View', schema: VIEW }))
+        result.view = await runView(3, bd)
         bd = branchDefects(result.view)
         if (bd.length) result.view_decision = 'Visual defects this branch caused remain after the auto-decided repair:\n' + bd.map((f) => `- ${f.finding} (${(f.screenshots || []).join(', ')})`).join('\n')
       } else result.view_decision = d.text
@@ -1377,12 +1482,12 @@ if (/^none\b/i.test(String(result.spec.docs_impact || '').trim())) {
 } else {
   result.docs = await call(docsPrompt(result.gates), opts('docs', { label: 'docs', schema: DOCS }))
   if (result.docs && result.docs.docs_impact === 'updated') {
-    result.docs_verdict = await call(docsVerifyPrompt(result.docs), opts('verify', { label: 'verify docs', phase: 'Docs', schema: VERDICT })) // [VF-6]
+    result.docs_verdict = await call(docsVerifyPrompt(result.docs), opts('docs_verify', { label: 'verify docs', phase: 'Docs', schema: VERDICT })) // [VF-6]
     if (result.docs_verdict && result.docs_verdict.passed === false) {
       // a docs rejection gets ONE repair round like a task; still rejected, the run is partial, never verified [VF-33]
       const fix = await call(docsRepairPrompt(result.docs_verdict), opts('repair', { label: 'repair docs', phase: 'Docs', schema: DOCS }))
       if (fix) result.docs = Object.assign({}, result.docs, fix, { commits: [].concat(result.docs.commits || [], fix.commits || []) })
-      result.docs_verdict = await call(docsVerifyPrompt(result.docs), opts('verify', { label: 'verify docs #2', phase: 'Docs', schema: VERDICT }))
+      result.docs_verdict = await call(docsVerifyPrompt(result.docs), opts('docs_verify', { label: 'verify docs #2', phase: 'Docs', schema: VERDICT }))
     }
   }
 }

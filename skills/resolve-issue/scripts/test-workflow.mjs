@@ -16,12 +16,14 @@ const wf = new AsyncFn('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', 
 const H = (s) => Buffer.from(s).toString('hex') // a mock commit id that is a valid SHA
 const IS_SHA = /^[0-9a-f]{7,40}$/
 
+const SEC = { heading: 'T: task', start_line: 10, end_line: 40 }
+const PLAN_SHA = H('plan-commit')
 const TASKS = [
-  { id: 'T1', title: 'root fix', files: ['a.ts'], depends_on: [], instructions: 'x', acceptance: 'y' },
-  { id: 'T2', title: 'guard', files: ['b.ts'], depends_on: ['T1'], instructions: 'x', acceptance: 'y' },
-  { id: 'T3', title: 'diag', files: ['b.ts'], depends_on: ['T1', 'T9'], instructions: 'x', acceptance: 'y' }, // shares b.ts; T9 dangling
-  { id: 'T4', title: 'cycle', files: ['c.ts'], depends_on: ['T5'], instructions: 'x', acceptance: 'y' },
-  { id: 'T5', title: 'cycle', files: ['d.ts'], depends_on: ['T4'], instructions: 'x', acceptance: 'y' },
+  { id: 'T1', title: 'root fix', files: ['a.ts'], depends_on: [], section: SEC, acceptance: 'y' },
+  { id: 'T2', title: 'guard', files: ['b.ts'], depends_on: ['T1'], section: SEC, acceptance: 'y' },
+  { id: 'T3', title: 'diag', files: ['b.ts'], depends_on: ['T1', 'T9'], section: SEC, acceptance: 'y' }, // shares b.ts; T9 dangling
+  { id: 'T4', title: 'cycle', files: ['c.ts'], depends_on: ['T5'], section: SEC, acceptance: 'y' },
+  { id: 'T5', title: 'cycle', files: ['d.ts'], depends_on: ['T4'], section: SEC, acceptance: 'y' },
 ]
 const FITS = {
   reported: [{ option: 'r', kind: 'reported', p: 0.8 }, { option: 'n1', kind: 'neighbour', p: 0.1 }, { option: 'n2', kind: 'neighbour', p: 0.1 }],
@@ -34,7 +36,7 @@ async function run({
   size = 'medium', tasks = TASKS, measured = false, docsImpact = 'none', gatesCommits = [], gatesPass = true, extra = {},
   serialReason = 'T4 and T5 form a cycle', replanTasks = null, buildCommits = null, verdictExtra = () => ({}), callerFlows = [],
   specExtra = {}, view = () => ({ screenshots: [], findings: [], processes_left: 0 }), harvest = () => ({ side_issues: [], dropped: [] }),
-  gatesGreen = true, diagExtra = {}, decide = null, specSeq = null, docsPass = () => true, gatesExtra = {},
+  gatesGreen = true, diagExtra = {}, decide = null, specSeq = null, docsPass = () => true, gatesExtra = {}, planSha = PLAN_SHA,
 } = {}) {
   const calls = []
   const seen = {}
@@ -43,14 +45,15 @@ async function run({
   const specFields = { root_cause: 'r', shared_seam: 'h', mechanism_explains_reported_data: true, user_change: userChange, out_of_scope: [], docs_impact: docsImpact, docs_justification: 'internal', caller_flows: callerFlows, user_visible: false, privacy_security_change: false, ...specExtra }
   const agent = async (prompt, o = {}) => {
     const label = o.label || ''
-    calls.push({ label, model: o.model, prompt })
+    calls.push({ label, model: o.model, effort: o.effort, agentType: o.agentType, prompt })
     spent += 1000
     if (label.startsWith('diagnose')) return { method: 'm', findings: 'f', evidence: measured ? ['probe: 0 of 3 rows rendered'] : [], candidates: [{ cause: 'stale cache', rank_p: 0.7, verdict: 'confirmed', evidence: 'e' }], ruled_out: [], open_questions: [], confidence: 'high', decision_required: null, ...diagExtra }
     if (label.startsWith('decide')) { if (!decide) throw new Error('unexpected decide call ' + label); return decide(label, prompt) }
     if (label === 'spec' || /^spec #\d+$/.test(label)) return Object.assign({ spec_path: 's.md' }, specFields, specSeq ? specSeq(Number((label.split('#')[1]) || 1), prompt) : {})
-    if (label === 'plan') return { plan_path: 'p.md', tasks, serial_reason: serialReason }
-    if (label === 'replan') return replanTasks ? { plan_path: 'p.md', tasks: replanTasks, serial_reason: null } : { plan_path: 'p.md', tasks, serial_reason: 'each task needs the previous one\'s code' }
-    if (label === 'spec plan' || /^spec plan #\d+$/.test(label) || label === 'load plan') return Object.assign({ spec_path: null, plan_path: 'p.md', tasks }, specFields)
+    if (label === 'plan') return { plan_path: 'p.md', plan_sha: planSha, tasks, serial_reason: serialReason }
+    if (label === 'replan') return replanTasks ? { plan_path: 'p.md', plan_sha: planSha, tasks: replanTasks, serial_reason: null } : { plan_path: 'p.md', plan_sha: planSha, tasks, serial_reason: 'each task needs the previous one\'s code' }
+    if (label === 'spec plan' || /^spec plan #\d+$/.test(label) || label === 'load plan') return Object.assign({ spec_path: null, plan_path: 'p.md', plan_sha: planSha, tasks }, specFields)
+    if (label.startsWith('view capture #')) return { screenshots: [{ target: 'settings / empty', viewport: '390x844', before: '/s/b.png', after: '/s/a.png' }], processes_left: 0 }
     if (label === 'symptom check') return { options: FITS[fit], verdict: 'reported', reason: 'r' } // the model's own verdict is ignored
     if (label.startsWith('view #')) return view(Number(label.split('#')[1]))
     if (label === 'harvest') return harvest(prompt)
@@ -260,7 +263,7 @@ async function run({
 }
 // the plan reports its waves; a fully serial medium plan gets ONE re-plan for parallelism [PL-15]
 {
-  const chain = ['T1', 'T2', 'T3', 'T4'].map((id, i) => ({ id, title: 's', files: [`f${i}.ts`], depends_on: i ? [`T${i}`] : [], instructions: 'x', acceptance: 'y' }))
+  const chain = ['T1', 'T2', 'T3', 'T4'].map((id, i) => ({ id, title: 's', files: [`f${i}.ts`], depends_on: i ? [`T${i}`] : [], section: SEC, acceptance: 'y' }))
   const par = chain.map((t, i) => Object.assign({}, t, { depends_on: i ? ['T1'] : [] }))
   const { res, calls, waves } = await run({ tasks: chain, serialReason: null, replanTasks: par })
   const rp = calls.find((c) => c.label === 'replan')
@@ -466,7 +469,6 @@ async function run({
   assert.equal(res.side_issue_label, 'triage-pending')
   assert.match(res.summary, /Side issues to file: 2 separate, 1 bundle of 2, 0 comments/)
 }
-console.log('workflow template: all dry-run checks passed')
 
 // a diagnosis data-loss menu stops before the spec; once the human answers, the menu reaches the spec instead of stopping again forever [SP-11, SP-19]
 {
@@ -484,7 +486,6 @@ console.log('workflow template: all dry-run checks passed')
   const again = await run({ diagExtra: { decision_required: menu }, extra: { decisions: ['A'] }, specExtra: { decision_required: menu } })
   assert.equal(again.res.status, 'decision_required', 'the spec can still re-raise an unsettled menu')
 }
-console.log('diagnosis decision gate: ok')
 
 // ---------- auto-decide [SP-20] ----------
 const RANKER = { ranker: { cmd: 'jev' } }
@@ -547,7 +548,7 @@ const bullets = (summary) => { const l = summary.split('\n'); const i = l.indexO
 }
 // the cap: at most 3 auto-decisions per run; the 4th stops without a decide agent
 {
-  const four = ['T1', 'T2', 'T3', 'T4'].map((id) => ({ id, title: id, files: [`${id}.ts`], depends_on: [], instructions: 'x', acceptance: 'y' }))
+  const four = ['T1', 'T2', 'T3', 'T4'].map((id) => ({ id, title: id, files: [`${id}.ts`], depends_on: [], section: SEC, acceptance: 'y' }))
   const decide = counting({})
   const { res } = await run({ tasks: four, serialReason: null, extra: { profile: RANKER }, decide, verdictExtra: (id, n) => (n === 1 ? { privacy_security_change: `${id} keeps names in the DOM` } : {}) })
   assert.equal(res.auto_decisions.length, 3)
@@ -578,7 +579,7 @@ const bullets = (summary) => { const l = summary.split('\n'); const i = l.indexO
   const b = bullets(res.summary)
   assert.ok(b.length >= 3 && b.length <= 4, `insights: ${b.join(' | ')}`)
   assert.equal(b[0], '- Cause class: state, at h')
-  assert.match(b[1], /^- Effort: most in \w+ \(\d+ spent\); repairs 0; verifier rejections 0$/)
+  assert.match(b[1], /^- Effort: most output in \w+ \(\d+ output tokens\); repairs 0; verifier rejections 0$/)
   assert.equal(b[2], '- Auto-decisions: 1 (top p 0.75)')
   // everything present: still 4 bullets, the watch line kept
   const f = (id) => (id === 'T1' ? [{ severity: 'test-gap', finding: 'acceptance pending', until_stage: 'gates' }, { severity: 'follow-up', finding: 'x' }] : [])
@@ -596,7 +597,6 @@ const bullets = (summary) => { const l = summary.split('\n'); const i = l.indexO
   assert.ok(calls.some((c) => c.label === 'view #3'))
   assert.equal(res.status, 'verified')
 }
-console.log('auto-decide and insights: ok')
 
 // ---------- 1.3.0 rules ----------
 // docs rejected: one repair round; still rejected, the run is partial with 'docs not verified', never verified [VF-33]
@@ -693,4 +693,167 @@ console.log('auto-decide and insights: ok')
   assert.match(res.summary.split('\n').pop(), /^New issues filed: pending audit \(1 draft\(s\), 1 bundle, labelled triage-pending, found-by-run\)$/)
   assert.equal((await run()).res.summary.split('\n').pop(), 'New issues filed: none')
 }
-console.log('1.3.0 rules: ok')
+
+// ---------- 1.4.0 token diet [CO-9] ----------
+// every agent runs as the lean worker type; profile agent_type null keeps the default; a tier may opt out
+{
+  const { calls } = await run({ docsImpact: 'docs/x.md', findings: () => [{ severity: 'follow-up', finding: 'x' }] })
+  assert.ok(calls.every((c) => c.agentType === 'resolve-worker'), calls.filter((c) => c.agentType !== 'resolve-worker').map((c) => c.label).join(', '))
+  assert.ok((await run({ extra: { profile: { agent_type: null } } })).calls.every((c) => c.agentType === undefined))
+  const t = await run({ extra: { tiers: { verify: { agent_type: null } } } })
+  assert.equal(t.calls.find((c) => c.label === 'verify T1 #1').agentType, undefined)
+  assert.equal(t.calls.find((c) => c.label === 'build T1').agentType, 'resolve-worker')
+}
+// tool output is capped at the source, head and tail kept, never cut silently; the hook line only when the switch is on
+{
+  const { calls } = await run()
+  const pre = calls[0].prompt
+  assert.match(pre, /git show --stat <sha>` first, then `git diff <sha>\^! -- <file>`/)
+  assert.match(pre, /rg -n '<pattern>' <path>`, then `sed -n '<a>,<b>p' <path>`/)
+  assert.match(pre, /keep its head AND tail and print "… truncated, full log at <path>"/)
+  assert.match(pre, /bring back only the failing set or the summary/)
+  assert.match(calls.find((c) => c.label === 'gates').prompt, /bring back only the failing set and the summary line\. Never print a whole log/)
+  assert.ok(!/A hook rewrites test commands/.test(pre))
+  assert.match((await run({ extra: { profile: { filter_test_output: true } } })).calls[0].prompt, /A hook rewrites test commands/)
+}
+// every prompt starts with the shared preamble and ends with its task tail, so siblings share a prefix
+{
+  const { calls } = await run({ specExtra: { user_visible: true }, docsImpact: 'docs/x.md', findings: () => [{ severity: 'follow-up', finding: 'x' }] })
+  for (const c of calls) assert.ok(c.prompt.trimStart().startsWith('=== SHARED CONTEXT'), `${c.label} does not start with the preamble`)
+  const v1 = calls.find((c) => c.label === 'verify T1 #1').prompt
+  const v2 = calls.find((c) => c.label === 'verify T2 #1').prompt
+  const cut = v1.indexOf('Your task:')
+  assert.ok(cut > 3000 && v1.slice(0, cut) === v2.slice(0, cut), 'verifiers of different tasks share everything before the task tail')
+}
+// plan as pointers: tasks are read at the plan's commit by line range, never pasted; a bad pointer stops the run
+{
+  const { res, calls } = await run({ rejectOnce: ['T1'] })
+  const ref = `git show ${PLAN_SHA}:p.md | sed -n '10,40p'`
+  for (const l of ['build T1', 'verify T1 #1', 'repair T1 #1', 'verify T1 #2']) assert.ok(calls.find((c) => c.label === l).prompt.includes(ref), l)
+  assert.match(calls.find((c) => c.label === 'verify T1 #1').prompt, /AS COMMITTED, never from the working tree/)
+  assert.match(calls.find((c) => c.label === 'plan').prompt, /POINTERS, not copies/)
+  assert.equal(res.status, 'verified')
+  const bad = await run({ planSha: 'HEAD' })
+  assert.equal(bad.res.status, 'failed')
+  assert.match(bad.res.reason, /plan_sha is not a commit SHA/)
+  assert.ok(!bad.calls.some((c) => c.label.startsWith('build')))
+  const nosec = await run({ tasks: [Object.assign({}, TASKS[0], { section: null })] })
+  assert.match(nosec.res.reason, /T1 has no section line range/)
+}
+// diagnoses reach the spec compact: the fields it needs, not pretty-printed, no side findings
+{
+  const { calls } = await run({ diagExtra: { side_findings: [{ severity: 'defect', finding: 'SIDE-FINDING-XYZ', file: 'q.ts' }], method: 'METHOD-XYZ' } })
+  const sp = calls.find((c) => c.label === 'spec').prompt
+  assert.ok(sp.includes('"candidates":[{"cause":"stale cache"'), 'compact JSON')
+  assert.ok(!/SIDE-FINDING-XYZ|METHOD-XYZ/.test(sp))
+}
+// verifiers run the task's named tests plus typecheck and lint; suites and e2e stay in gates
+{
+  const v = (await run()).calls.find((c) => c.label === 'verify T1 #1').prompt
+  assert.match(v, /Run ONLY the task's named tests[^\n]*Never the full suites or e2e unless a named test is e2e: the gates stage owns those/)
+}
+// builders get the shortest-correct-diff rule; verifiers do not
+{
+  const { calls } = await run()
+  assert.match(calls.find((c) => c.label === 'build T1').prompt, /shortest correct diff/)
+  assert.ok(!/shortest correct diff/.test(calls.find((c) => c.label === 'verify T1 #1').prompt))
+}
+// VIEW reuses round-1 BEFORE shots later; view.split = a capture agent on the build tier + a judge that starts nothing
+{
+  const branch = { cause: 'branch', severity: 'defect', kind: 'ux', finding: 'save button overlaps the footer', screenshots: ['/s/a.png'], file: 'a.ts' }
+  const view = (n) => ({ screenshots: [], findings: n === 1 ? [branch] : [], processes_left: 0 })
+  const one = await run({ specExtra: { user_visible: true }, view })
+  const p1 = one.calls.find((c) => c.label === 'view #1').prompt
+  const p2 = one.calls.find((c) => c.label === 'view #2').prompt
+  assert.match(p1, /throwaway detached worktree at/)
+  assert.ok(!/throwaway detached worktree at/.test(p2) && /REUSE the round-1 before shots/.test(p2))
+  assert.ok(!one.calls.some((c) => c.label.startsWith('view capture')))
+  const sp = await run({ specExtra: { user_visible: true }, view, extra: { profile: { view: { split: true } } } })
+  const labels = sp.calls.map((c) => c.label)
+  assert.ok(labels.indexOf('view capture #1') >= 0 && labels.indexOf('view capture #1') < labels.indexOf('view #1'))
+  assert.equal(sp.calls.find((c) => c.label === 'view capture #1').model, 'mid', 'capture runs on the build tier')
+  const judge = sp.calls.find((c) => c.label === 'view #1').prompt
+  assert.ok(/start nothing/.test(judge) && /\/s\/a\.png/.test(judge) && !/throwaway detached worktree/.test(judge))
+  assert.equal(sp.res.status, 'verified')
+  assert.equal(sp.res.view.screenshots, 1, 'the judge result carries the capture agent\'s shots')
+}
+// medium effort for completeness, harvest and docs-verify; verify keeps its own tier
+{
+  const tiers = { verify: { model: 'top', effort: 'high' }, build: { model: 'mid' } }
+  const { calls } = await run({ docsImpact: 'docs/x.md', findings: () => [{ severity: 'follow-up', finding: 'x' }], extra: { tiers } })
+  for (const l of ['completeness', 'verify docs', 'harvest']) assert.equal(calls.find((c) => c.label === l).effort, 'medium', l)
+  assert.equal(calls.find((c) => c.label === 'completeness').model, 'top')
+  assert.equal(calls.find((c) => c.label === 'verify T1 #1').effort, 'high')
+}
+// spent is labelled output-only
+{
+  assert.equal((await run()).res.metrics.spent_unit, 'output_tokens')
+}
+// switch verify.delta_reverify (off by default): a re-verify after a repair gets the prior verdict
+{
+  const ve = (id, n) => (id === 'T1' && n === 1 ? { checks: [{ check: 'named tests pass', ok: false, detail: 'x' }] } : {})
+  const off = await run({ rejectOnce: ['T1'], verdictExtra: ve })
+  assert.ok(!/DELTA RE-VERIFY/.test(off.calls.find((c) => c.label === 'verify T1 #2').prompt))
+  const on = await run({ rejectOnce: ['T1'], verdictExtra: ve, extra: { profile: { verify: { delta_reverify: true } } } })
+  const p = on.calls.find((c) => c.label === 'verify T1 #2').prompt
+  assert.ok(p.includes(`git diff --name-only ${H('sha-T1')}..HEAD`) && /named tests pass/.test(p))
+  assert.ok(!/DELTA RE-VERIFY/.test(on.calls.find((c) => c.label === 'verify T1 #1').prompt), 'round 1 is always a full verify')
+}
+// switch verify.diff_scope (off by default): the task's diff and its callers, cross-cutting code exempt
+{
+  assert.ok(!/DIFF SCOPE/.test((await run()).calls.find((c) => c.label === 'verify T1 #1').prompt))
+  const p = (await run({ extra: { profile: { verify: { diff_scope: true } } } })).calls.find((c) => c.label === 'verify T1 #1').prompt
+  assert.match(p, /DIFF SCOPE[^\n]*rg -l '<export>'[^\n]*Cross-cutting code \(auth/)
+}
+// switch spec_plan_merged_upto (off by default): one spec+plan agent when every diagnosis expects that few tasks
+{
+  const two = TASKS.slice(0, 2)
+  const off = await run({ tasks: two, diagExtra: { expected_tasks: 2 } })
+  assert.ok(off.calls.some((c) => c.label === 'spec') && off.calls.some((c) => c.label === 'plan'))
+  const on = await run({ tasks: two, diagExtra: { expected_tasks: 2 }, extra: { profile: { spec_plan_merged_upto: 3 } } })
+  assert.ok(on.calls.some((c) => c.label === 'spec plan') && !on.calls.some((c) => c.label === 'plan' || c.label === 'spec'))
+  assert.match(on.calls.find((c) => c.label === 'spec plan').prompt, /Use 1 to 3 tasks/)
+  assert.match(on.calls.find((c) => c.label === 'spec plan').prompt, /Write the spec to/, 'a medium merge still writes a spec file')
+  for (const e of [5, null]) assert.ok((await run({ tasks: two, diagExtra: { expected_tasks: e }, extra: { profile: { spec_plan_merged_upto: 3 } } })).calls.some((c) => c.label === 'plan'), String(e))
+}
+// a resume with the stopped run's plan spends no agent on loading it
+{
+  const r = await run({ extra: { resumeFrom: 'build', resumePlan: { root_cause: 'r', user_change: 'u', user_visible: false, docs_impact: 'none', plan_path: 'p.md', plan_sha: PLAN_SHA, tasks: TASKS } } })
+  assert.ok(!r.calls.some((c) => c.label === 'load plan'))
+  assert.equal(r.calls[0].label, 'build T1')
+  assert.equal(r.res.status, 'verified')
+}
+
+// scripts: the opt-in test-output hook keeps the exit code and the full log; run-cost.py weights cache and output
+{
+  const { execFileSync, spawnSync } = await import('node:child_process')
+  const { mkdtempSync, writeFileSync, readFileSync: rd, readdirSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(`${tmpdir()}/ri-`)
+  const hook = new URL('./hooks/filter-test-output.py', import.meta.url).pathname
+  const run1 = (command) => execFileSync('python3', [hook], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }), env: { ...process.env, RESOLVE_LOG_DIR: dir } }).toString()
+  assert.equal(run1('git status'), '', 'not a test runner: untouched')
+  assert.equal(run1('bun test > /tmp/x.log 2>&1'), '', 'already redirected: untouched')
+  const out = JSON.parse(run1('vitest run'))
+  const cmd = out.hookSpecificOutput.updatedInput.command
+  const fake = cmd.replace('vitest run', `for i in $(seq 1 300); do echo line$i; done; echo 'FAIL a.test.ts'; echo '2 failed, 298 passed'; false`)
+  const r = spawnSync('bash', ['-c', fake])
+  const shown = r.stdout.toString()
+  assert.equal(r.status, 1, 'the runner\'s exit code survives')
+  assert.ok(/FAIL a\.test\.ts/.test(shown) && /2 failed, 298 passed/.test(shown) && /… truncated, full log at .* exit=1/.test(shown))
+  assert.ok(!/line150\n/.test(shown), 'the middle is cut')
+  const log = readdirSync(dir).find((f) => f.endsWith('.log'))
+  assert.ok(/line150\n/.test(rd(`${dir}/${log}`, 'utf8')), 'the full log stays on disk')
+  // run-cost
+  const wf = mkdtempSync(`${tmpdir()}/ri-wf-`)
+  writeFileSync(`${wf}/journal.jsonl`, [{ type: 'started', agentId: 'a1', phase: 'Verify', label: 'verify T1 #1' }, { type: 'started', agentId: 'a2', phase: 'Verify', label: 'repair T1 #1' }].map((x) => JSON.stringify(x)).join('\n'))
+  const u = { input_tokens: 10, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000, output_tokens: 20 }
+  writeFileSync(`${wf}/agent-a1.jsonl`, [1, 1, 2].map((id) => JSON.stringify({ type: 'assistant', message: { id: `m${id}`, usage: u } })).join('\n'))
+  writeFileSync(`${wf}/agent-a1.meta.json`, JSON.stringify({ model: 'opus' }))
+  writeFileSync(`${wf}/agent-a2.jsonl`, JSON.stringify({ type: 'assistant', message: { id: 'm9', usage: u } }))
+  writeFileSync(`${wf}/agent-a2.meta.json`, JSON.stringify({ model: 'sonnet' }))
+  const c = JSON.parse(execFileSync('python3', [new URL('./run-cost.py', import.meta.url).pathname, wf]).toString())
+  const one = 0.1 * 1000 + 1.25 * 100 + 10 + 5 * 20 // 335 units per turn at weight 1
+  assert.deepEqual([c.stages.Verify.turns, c.stages.Verify.units, c.stages.Repair.units], [2, 2 * one, Math.round(0.6 * one)], JSON.stringify(c))
+}
+console.log('PASS: workflow dry-run checks')

@@ -466,6 +466,8 @@ UX-5 to UX-35 are in `references/packs/ux.md`.
 
 CO-5 to CO-8 are in `references/packs/cost.md`.
 
+9. **Diet tokens where the cost is, measured from transcripts: spawn fewer agents (none for under about 6 turns), run the rest as a lean worker type, start every prompt with the shared preamble, pass pointers (the plan by section at its commit, compact diagnoses) instead of copies, cap tool output at the source without ever cutting silently, and keep the builder's diff short. Never trim verification, and measure each change against repairs and rejections.** — The budget counter saw output only, and output was the cheap part. (Across 10 full runs, about 300 agents and 12M input-token-equivalents per run: cache reads 55% and writes 37% of cost, output 8%; about half was the start-up context each agent loaded before its task, and plan code was written twice and pasted into three more prompts. Outside evidence agreed: test output at the reporter shrank a run about 96% (https://magarcia-io.pages.dev/your-test-output-is-burning-tokens); only about 15% of start-up context is the user's to trim (https://dev.to/nomurasan/i-measured-claude-codes-prompt-cache-cost-three-ways-85-of-it-wasnt-mine-to-trim-48hm); a spawn costs about 2.3 turns (https://theinfinity.dev/articles/subagent-cost-measured); dropping old observations halved agent cost at equal solve rate (https://arxiv.org/abs/2508.21433); an output-compressing shell proxy reported a failing typecheck as clean (https://github.com/rtk-ai/rtk/issues/582); a terse-prose mode measured +7% tokens on agent work, a write-less-code mode -22%.)
+
 ## 20. Product judgment (PJ)
 
 PJ-1 to PJ-9 are in `references/packs/product.md`.

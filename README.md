@@ -80,6 +80,8 @@ After the audit, the main session files the harvested side issues automatically 
 
 In Claude Code with the Workflow tool, `skills/resolve-issue/scripts/stamp-workflow.sh <id>` makes a per-issue copy of [`templates/workflow.js`](skills/resolve-issue/templates/workflow.js). Without it, the same loop runs through Agent subagents.
 
+Stages run as a lean worker agent (`templates/agents/resolve-worker.md`: core file and shell tools only), which you copy to `.claude/agents/` once; without it the run uses the default agent. Prompts share a cached prefix, the plan reaches each task as a pointer into its commit, and `scripts/run-cost.py` reports a run's real cost from its transcripts.
+
 ## The stop points
 
 | Action | Who |
