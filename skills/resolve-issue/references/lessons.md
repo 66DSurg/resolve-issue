@@ -439,6 +439,8 @@ UX-5 to UX-35 are in `references/packs/ux.md`.
 20. **Keep agent-context files to operating rules. Shipped state goes in the changelog.** — Narratives bloat context and go stale. (See DC-9.)
 21. **After any persisted state change, write the lesson back into this file so the next run inherits it.** — Lessons left in chat are lost. (The operator wants every learning, small to large, fed back into the skill.)
 22. **Record each rejected alternative and why it lost, in the ADR or spec, so a later "why not X?" is answered from the docs instead of being re-litigated.** — Otherwise the same mistake gets tried again. (The operator asked why a wrapped engine had been preferred over the direct library and whether any record said why. The answer had to be rebuilt.)
+23. **When a documented fact changes, search every doc set (user docs, internal docs, runbook) for the old wording and the fact itself, and fix or delete every hit in the same change.** — Edits patch the line in front of them while summary boxes and second pages keep the old claim. (A full sweep found ~76 drifted facts; one page's summary box contradicted its own table, fixed one release earlier.)
+24. **Enforce docs impact where changes actually flow. If nothing goes through pull requests, a PR-triggered docs check never runs; put the gate in the release step instead (each shipped issue touches docs or carries a `Docs: none — <reason>` line), and re-verify a few stalest pages per release rather than trusting a stale `verified` stamp.** — A check on a path no change takes is decoration. (The PR docs check had not run once in 60 days of direct-to-main releases; every internal page still said verified many releases back.)
 
 ## 18. Communication (CM)
 

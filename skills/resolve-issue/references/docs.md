@@ -25,6 +25,8 @@ Rules:
 - **Mark superseded notes obsolete**, with a pointer to what replaced them [DC-17].
 - **Document the known gaps in an automation's coverage** instead of presenting it as complete [DC-18].
 - **When trimming docs**, aim for shorter and current, but never delete load-bearing content: runbook steps, gotchas, invariants, exact commands. Update every link when you move files [DC-19].
+- **When a documented fact changes, grep every doc set** (user docs, internal docs, runbook) for the old wording and fix every hit in the same change [DC-23].
+- **Gate docs impact on the path changes really take.** With no PRs, check it at release time (each shipped issue touches docs or says `Docs: none — <reason>`), and re-verify the few stalest pages each release [DC-24].
 - **After any run that taught something, write the lesson back** into `references/lessons.md` (see SKILL.md, "Feed the lessons back") [DC-21].
 
 ## Docs result schema
